@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Coldsuit Monitor</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;padding:20px;background:#1a1a2e;color:#eee;text-align:center;min-height:100vh}
+h1{color:#0ff;font-size:1.5em;margin-bottom:4px}
+#status{font-size:.85em;margin-bottom:16px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.dot.off{background:#f44}.dot.on{background:#0f0}
+button{padding:10px 20px;font-size:1em;background:#0ff;color:#1a1a2e;border:none;border-radius:6px;cursor:pointer;font-weight:600}
+button:active{opacity:.8}
+button:disabled{opacity:.4;cursor:default}
+#disconnectBtn{background:#f44;color:#fff;display:none;margin-left:8px}
+table{margin:20px auto;border-collapse:collapse;width:95%;max-width:420px}
+td,th{padding:12px 14px;border:1px solid #333;font-size:1.1em}
+th{background:#16213e;color:#0ff}
+tr:nth-child(even){background:#16213e}
+tr:nth-child(odd){background:#0f3460}
+#readings{display:none}
+p{color:#ccc;margin:8px 0}
+b{color:#0ff}
+.ctrl{margin:16px auto;max-width:420px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.ctrl label{white-space:nowrap}
+input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;color:#eee;border:1px solid #333;border-radius:4px;text-align:center}
+.setbtn{padding:8px 14px;font-size:.95em}
+#msg{color:#0f0;font-size:.9em;min-height:1.2em;margin-top:8px}
+.note{font-size:.75em;color:#555;margin-top:24px}
+</style>
+</head><body>
+<h1>Coldsuit Monitor</h1>
+<div id="status"><span class="dot off" id="dot"></span><span id="stxt">Disconnected</span></div>
+<button id="connectBtn" onclick="doConnect()">Connect via Bluetooth</button>
+<button id="disconnectBtn" onclick="doDisconnect()">Disconnect</button>
+
+<div id="readings">
+<table><tr><th>Sensor</th><th>&deg;F</th></tr><tbody id="tb"></tbody></table>
+<p id="delta" style="font-size:1.3em"></p>
+<p style="font-size:1.1em">Pump: <b id="pump">--</b></p>
+
+<div class="ctrl">
+  <label>Shutoff (&deg;F):</label>
+  <input type="number" id="thr" step="0.5" min="0" max="120">
+  <button class="setbtn" onclick="setShutoff()">Set</button>
+</div>
+<div class="ctrl">
+  <label>Hold (s):</label>
+  <input type="number" id="hold" step="1" min="0" max="600">
+  <button class="setbtn" onclick="setHold()">Set</button>
+</div>
+<div id="msg"></div>
+</div>
+
+<p class="note">Requires HTTPS &amp; Chrome/Edge with Web Bluetooth.</p>
+
+<script>
+// BLE UUIDs: must match cold.py
+const SERVICE = 'beb9c500-ad93-4226-a33f-01efd22eb2f9';
+const STATUS  = 'beb9c501-ad93-4226-a33f-01efd22eb2f9';
+const SHUTOFF = 'beb9c502-ad93-4226-a33f-01efd22eb2f9';
+const HOLD    = 'beb9c503-ad93-4226-a33f-01efd22eb2f9';
+
+let device, server, shutoffChar, holdChar;
+
+function ui(connected) {
+  document.getElementById('connectBtn').style.display = connected ? 'none' : '';
+  document.getElementById('disconnectBtn').style.display = connected ? '' : 'none';
+  document.getElementById('readings').style.display = connected ? '' : 'none';
+  const dot = document.getElementById('dot');
+  dot.className = 'dot ' + (connected ? 'on' : 'off');
+  document.getElementById('stxt').textContent = connected ? 'Connected' : 'Disconnected';
+}
+
+function showMsg(t) {
+  const m = document.getElementById('msg');
+  m.textContent = t;
+  setTimeout(() => { m.textContent = ''; }, 3000);
+}
+
+function onStatus(event) {
+  const dv = event.target.value;
+  if (dv.byteLength < 19) return;
+  const resF    = dv.getFloat32(0, true);
+  const retF    = dv.getFloat32(4, true);
+  const deltaF  = dv.getFloat32(8, true);
+  const pump    = dv.getUint8(12);
+  const shutoff = dv.getFloat32(13, true);
+  const hold    = dv.getUint16(17, true);
+
+  let rows = '';
+  if (!isNaN(resF))  rows += '<tr><td>Reservoir</td><td>' + resF.toFixed(1) + '\u00b0F</td></tr>';
+  else               rows += '<tr><td>Reservoir</td><td>--.-</td></tr>';
+  if (!isNaN(retF))  rows += '<tr><td>Return Line</td><td>' + retF.toFixed(1) + '\u00b0F</td></tr>';
+  else               rows += '<tr><td>Return Line</td><td>--.-</td></tr>';
+  document.getElementById('tb').innerHTML = rows;
+
+  const de = document.getElementById('delta');
+  de.innerHTML = !isNaN(deltaF) ? 'Delta: <b>' + deltaF.toFixed(1) + '\u00b0F</b>' : '';
+
+  const p = document.getElementById('pump');
+  p.textContent = pump ? 'ON' : 'OFF';
+  p.style.color = pump ? '#0f0' : '#f44';
+
+  // Sync inputs on first update
+  if (!document.getElementById('thr').dataset.set) {
+    document.getElementById('thr').value = shutoff.toFixed(1);
+    document.getElementById('thr').dataset.set = '1';
+  }
+  if (!document.getElementById('hold').dataset.set) {
+    document.getElementById('hold').value = hold;
+    document.getElementById('hold').dataset.set = '1';
+  }
+}
+
+async function doConnect() {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'Coldsuit' }],
+      optionalServices: [SERVICE],
+    });
+    device.addEventListener('gattserverdisconnected', () => {
+      ui(false);
+      // Clear sync flags so next connect re-reads values
+      delete document.getElementById('thr').dataset.set;
+      delete document.getElementById('hold').dataset.set;
+    });
+
+    server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(SERVICE);
+
+    const statusChar = await svc.getCharacteristic(STATUS);
+    shutoffChar = await svc.getCharacteristic(SHUTOFF);
+    holdChar    = await svc.getCharacteristic(HOLD);
+
+    statusChar.addEventListener('characteristicvaluechanged', onStatus);
+    await statusChar.startNotifications();
+
+    ui(true);
+  } catch (err) {
+    console.error(err);
+    showMsg('Connection failed: ' + err.message);
+  }
+}
+
+function doDisconnect() {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+  ui(false);
+}
+
+async function setShutoff() {
+  const v = parseFloat(document.getElementById('thr').value);
+  if (isNaN(v) || !shutoffChar) return;
+  try {
+    const buf = new ArrayBuffer(4);
+    new DataView(buf).setFloat32(0, v, true);
+    await shutoffChar.writeValueWithResponse(new Uint8Array(buf));
+    showMsg('Shutoff set to ' + v.toFixed(1) + '\u00b0F');
+  } catch (err) { showMsg('Write error: ' + err.message); }
+}
+
+async function setHold() {
+  const v = parseInt(document.getElementById('hold').value, 10);
+  if (isNaN(v) || !holdChar) return;
+  try {
+    const buf = new ArrayBuffer(2);
+    new DataView(buf).setUint16(0, v, true);
+    await holdChar.writeValueWithResponse(new Uint8Array(buf));
+    showMsg('Hold time set to ' + v + 's');
+  } catch (err) { showMsg('Write error: ' + err.message); }
+}
+</script>
+</body></html>

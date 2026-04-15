@@ -66,8 +66,8 @@ let device, server, shutoffChar, holdChar;
 
 function ui(connected) {
   document.getElementById('connectBtn').style.display = connected ? 'none' : '';
-  document.getElementById('disconnectBtn').style.display = connected ? '' : 'none';
-  document.getElementById('readings').style.display = connected ? '' : 'none';
+  document.getElementById('disconnectBtn').style.display = connected ? 'inline-block' : 'none';
+  document.getElementById('readings').style.display = connected ? 'block' : 'none';
   const dot = document.getElementById('dot');
   dot.className = 'dot ' + (connected ? 'on' : 'off');
   document.getElementById('stxt').textContent = connected ? 'Connected' : 'Disconnected';

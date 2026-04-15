@@ -81,7 +81,8 @@ function showMsg(t) {
 
 function onStatus(event) {
   const dv = event.target.value;
-  if (dv.byteLength < 19) return;
+  console.log('BLE notification:', dv.byteLength, 'bytes', new Uint8Array(dv.buffer));
+  if (dv.byteLength < 19) { console.warn('BLE: payload too short:', dv.byteLength); return; }
   const resF    = dv.getFloat32(0, true);
   const retF    = dv.getFloat32(4, true);
   const deltaF  = dv.getFloat32(8, true);
@@ -136,6 +137,14 @@ async function doConnect() {
 
     statusChar.addEventListener('characteristicvaluechanged', onStatus);
     await statusChar.startNotifications();
+    console.log('BLE: subscribed to notifications on', STATUS);
+
+    // Read current value immediately in case a notification hasn't arrived yet
+    try {
+      const initVal = await statusChar.readValue();
+      console.log('BLE: initial read:', initVal.byteLength, 'bytes');
+      onStatus({ target: { value: initVal } });
+    } catch (e) { console.warn('BLE: initial read failed:', e); }
 
     ui(true);
   } catch (err) {

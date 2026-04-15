@@ -31,6 +31,9 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 .setbtn{padding:8px 14px;font-size:.95em}
 #msg{color:#0f0;font-size:.9em;min-height:1.2em;margin-top:8px}
 .note{font-size:.75em;color:#555;margin-top:24px}
+.hint{font-size:.75em;color:#666;margin:2px auto 0;max-width:420px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid #0ff3;border-top-color:#0ff;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 </style>
 </head><body>
 <h1>Coldsuit Monitor</h1>
@@ -46,25 +49,23 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
   <label>Pump enabled:</label>
   <label style="position:relative;display:inline-block;width:50px;height:28px;margin-left:4px">
     <input type="checkbox" id="pumpTog" checked onchange="togglePump()" style="opacity:0;width:0;height:0">
-    <span style="position:absolute;cursor:pointer;inset:0;background:#f44;border-radius:28px;transition:.3s"></span>
-    <span id="togKnob" style="position:absolute;left:3px;top:3px;width:22px;height:22px;background:#fff;border-radius:50%;transition:.3s"></span>
+    <span id="togTrack" style="position:absolute;cursor:pointer;inset:0;background:#0f0;border-radius:28px;transition:.3s"></span>
+    <span id="togKnob" style="position:absolute;left:25px;top:3px;width:22px;height:22px;background:#fff;border-radius:50%;transition:.3s"></span>
   </label>
 </div>
 
-<p style="font-size:.8em;color:#888;max-width:420px;margin:18px auto 8px;text-align:left;">
-<b style="color:#aaa;">Shutoff</b> — pump turns off when the return line drops to this temp.<br>
-<b style="color:#aaa;">Hold</b> — minimum seconds before the pump can switch on/off again (debounce).
-</p>
 <div class="ctrl">
   <label>Shutoff (&deg;F):</label>
   <input type="number" id="thr" step="0.5" min="0" max="120">
   <button class="setbtn" onclick="setShutoff()">Set</button>
 </div>
+<p class="hint">Pump turns off when the return line drops to this temp.</p>
 <div class="ctrl">
   <label>Hold (s):</label>
   <input type="number" id="hold" step="1" min="0" max="600">
   <button class="setbtn" onclick="setHold()">Set</button>
 </div>
+<p class="hint">Minimum seconds before the pump can switch on/off (debounce).</p>
 <div id="msg"></div>
 </div>
 
@@ -80,13 +81,22 @@ const PUMP_EN = 'beb9c504-ad93-4226-a33f-01efd22eb2f9';
 
 let device, server, shutoffChar, holdChar, pumpEnChar;
 
-function ui(connected) {
-  document.getElementById('connectBtn').style.display = connected ? 'none' : '';
+function ui(connected, loading) {
+  const btn = document.getElementById('connectBtn');
+  if (loading) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Connecting…';
+    btn.style.display = '';
+  } else {
+    btn.disabled = false;
+    btn.innerHTML = 'Connect via Bluetooth';
+    btn.style.display = connected ? 'none' : '';
+  }
   document.getElementById('disconnectBtn').style.display = connected ? 'inline-block' : 'none';
   document.getElementById('readings').style.display = connected ? 'block' : 'none';
   const dot = document.getElementById('dot');
   dot.className = 'dot ' + (connected ? 'on' : 'off');
-  document.getElementById('stxt').textContent = connected ? 'Connected' : 'Disconnected';
+  document.getElementById('stxt').textContent = loading ? 'Connecting…' : connected ? 'Connected' : 'Disconnected';
 }
 
 function showMsg(t) {
@@ -122,7 +132,7 @@ function onStatus(event) {
   p.style.color = pump ? '#0f0' : '#f44';
 
   const tog = document.getElementById('pumpTog');
-  if (tog) tog.checked = !!pumpEn;
+  if (tog) { tog.checked = !!pumpEn; updateToggleStyle(!!pumpEn); }
 
   // Sync inputs on first update
   if (!document.getElementById('thr').dataset.set) {
@@ -141,6 +151,7 @@ async function doConnect() {
       filters: [{ name: 'Coldsuit' }],
       optionalServices: [SERVICE],
     });
+    ui(false, true);
     device.addEventListener('gattserverdisconnected', () => {
       ui(false);
       // Clear sync flags so next connect re-reads values
@@ -170,6 +181,7 @@ async function doConnect() {
     ui(true);
   } catch (err) {
     console.error(err);
+    ui(false);
     showMsg('Connection failed: ' + err.message);
   }
 }
@@ -213,7 +225,7 @@ async function togglePump() {
 
 function updateToggleStyle(on) {
   const knob = document.getElementById('togKnob');
-  const track = knob.previousElementSibling;
+  const track = document.getElementById('togTrack');
   track.style.background = on ? '#0f0' : '#f44';
   knob.style.left = on ? '25px' : '3px';
 }

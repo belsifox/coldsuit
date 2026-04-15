@@ -3,6 +3,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Coldsuit Monitor</title>
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#1a1a2e">
+<link rel="apple-touch-icon" href="./icon-192.png">
 <style>
 *{box-sizing:border-box}
 body{font-family:system-ui,sans-serif;margin:0;padding:20px;background:#1a1a2e;color:#eee;text-align:center;min-height:100vh}
@@ -39,7 +42,19 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 <table><tr><th>Sensor</th><th>&deg;F</th></tr><tbody id="tb"></tbody></table>
 <p id="delta" style="font-size:1.3em"></p>
 <p style="font-size:1.1em">Pump: <b id="pump">--</b></p>
+<div class="ctrl">
+  <label>Pump enabled:</label>
+  <label style="position:relative;display:inline-block;width:50px;height:28px;margin-left:4px">
+    <input type="checkbox" id="pumpTog" checked onchange="togglePump()" style="opacity:0;width:0;height:0">
+    <span style="position:absolute;cursor:pointer;inset:0;background:#f44;border-radius:28px;transition:.3s"></span>
+    <span id="togKnob" style="position:absolute;left:3px;top:3px;width:22px;height:22px;background:#fff;border-radius:50%;transition:.3s"></span>
+  </label>
+</div>
 
+<p style="font-size:.8em;color:#888;max-width:420px;margin:18px auto 8px;text-align:left;">
+<b style="color:#aaa;">Shutoff</b> — pump turns off when the return line drops to this temp.<br>
+<b style="color:#aaa;">Hold</b> — minimum seconds before the pump can switch on/off again (debounce).
+</p>
 <div class="ctrl">
   <label>Shutoff (&deg;F):</label>
   <input type="number" id="thr" step="0.5" min="0" max="120">
@@ -61,8 +76,9 @@ const SERVICE = 'beb9c500-ad93-4226-a33f-01efd22eb2f9';
 const STATUS  = 'beb9c501-ad93-4226-a33f-01efd22eb2f9';
 const SHUTOFF = 'beb9c502-ad93-4226-a33f-01efd22eb2f9';
 const HOLD    = 'beb9c503-ad93-4226-a33f-01efd22eb2f9';
+const PUMP_EN = 'beb9c504-ad93-4226-a33f-01efd22eb2f9';
 
-let device, server, shutoffChar, holdChar;
+let device, server, shutoffChar, holdChar, pumpEnChar;
 
 function ui(connected) {
   document.getElementById('connectBtn').style.display = connected ? 'none' : '';
@@ -82,13 +98,14 @@ function showMsg(t) {
 function onStatus(event) {
   const dv = event.target.value;
   console.log('BLE notification:', dv.byteLength, 'bytes', new Uint8Array(dv.buffer));
-  if (dv.byteLength < 19) { console.warn('BLE: payload too short:', dv.byteLength); return; }
+  if (dv.byteLength < 20) { console.warn('BLE: payload too short:', dv.byteLength); return; }
   const resF    = dv.getFloat32(0, true);
   const retF    = dv.getFloat32(4, true);
   const deltaF  = dv.getFloat32(8, true);
   const pump    = dv.getUint8(12);
   const shutoff = dv.getFloat32(13, true);
   const hold    = dv.getUint16(17, true);
+  const pumpEn  = dv.getUint8(19);
 
   let rows = '';
   if (!isNaN(resF))  rows += '<tr><td>Reservoir</td><td>' + resF.toFixed(1) + '\u00b0F</td></tr>';
@@ -103,6 +120,9 @@ function onStatus(event) {
   const p = document.getElementById('pump');
   p.textContent = pump ? 'ON' : 'OFF';
   p.style.color = pump ? '#0f0' : '#f44';
+
+  const tog = document.getElementById('pumpTog');
+  if (tog) tog.checked = !!pumpEn;
 
   // Sync inputs on first update
   if (!document.getElementById('thr').dataset.set) {
@@ -134,6 +154,7 @@ async function doConnect() {
     const statusChar = await svc.getCharacteristic(STATUS);
     shutoffChar = await svc.getCharacteristic(SHUTOFF);
     holdChar    = await svc.getCharacteristic(HOLD);
+    pumpEnChar  = await svc.getCharacteristic(PUMP_EN);
 
     statusChar.addEventListener('characteristicvaluechanged', onStatus);
     await statusChar.startNotifications();
@@ -179,5 +200,23 @@ async function setHold() {
     showMsg('Hold time set to ' + v + 's');
   } catch (err) { showMsg('Write error: ' + err.message); }
 }
+
+async function togglePump() {
+  const on = document.getElementById('pumpTog').checked;
+  updateToggleStyle(on);
+  if (!pumpEnChar) return;
+  try {
+    await pumpEnChar.writeValueWithResponse(new Uint8Array([on ? 1 : 0]));
+    showMsg('Pump ' + (on ? 'enabled' : 'disabled'));
+  } catch (err) { showMsg('Write error: ' + err.message); }
+}
+
+function updateToggleStyle(on) {
+  const knob = document.getElementById('togKnob');
+  const track = knob.previousElementSibling;
+  track.style.background = on ? '#0f0' : '#f44';
+  knob.style.left = on ? '25px' : '3px';
+}
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
 </script>
 </body></html>

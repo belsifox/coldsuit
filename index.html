@@ -32,6 +32,12 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 #msg{color:#0f0;font-size:.9em;min-height:1.2em;margin-top:8px}
 .note{font-size:.75em;color:#555;margin-top:24px}
 .hint{font-size:.75em;color:#666;margin:2px auto 0;max-width:420px}
+.ranges{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin:6px auto;max-width:420px}
+.rbtn{padding:6px 10px;font-size:.85em;background:#16213e;color:#ccc;border:1px solid #333;font-weight:400}
+.rbtn.on{background:#0ff;color:#1a1a2e;border-color:#0ff;font-weight:600}
+#graph{width:95%;max-width:420px;height:250px;background:#16213e;border:1px solid #333;border-radius:6px;margin:4px auto 0;display:block}
+.legend{font-size:.8em;color:#aaa;margin:4px 0 0}
+.legend i{display:inline-block;width:10px;height:3px;vertical-align:middle;margin:0 4px 0 10px}
 .btns{display:flex;gap:10px;justify-content:center;margin:8px auto 16px;max-width:420px}
 .pill{padding:8px 14px;border-radius:16px;background:#16213e;border:1px solid #333;color:#777;font-size:.9em;transition:.15s}
 .pill small{display:block;font-size:.7em;color:inherit;opacity:.7}
@@ -48,6 +54,19 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 <div id="readings">
 <table><tr><th>Sensor</th><th>&deg;F</th></tr><tbody id="tb"></tbody></table>
 <p id="delta" style="font-size:1.3em"></p>
+<div class="ranges" id="ranges">
+  <button class="rbtn" data-s="30" onclick="setSpan(30)">30s</button>
+  <button class="rbtn" data-s="60" onclick="setSpan(60)">1m</button>
+  <button class="rbtn" data-s="300" onclick="setSpan(300)">5m</button>
+  <button class="rbtn" data-s="600" onclick="setSpan(600)">10m</button>
+  <button class="rbtn" data-s="1800" onclick="setSpan(1800)">30m</button>
+  <button class="rbtn" data-s="3600" onclick="setSpan(3600)">1h</button>
+  <button class="rbtn" data-s="7200" onclick="setSpan(7200)">2h</button>
+  <button class="rbtn" data-s="10800" onclick="setSpan(10800)">3h</button>
+</div>
+<canvas id="graph"></canvas>
+<p class="legend"><i style="background:#0ff"></i>Reservoir <i style="background:#fa0"></i>Return Line <i style="background:#f44"></i>Shutoff <i style="background:#0f0;height:8px"></i>Pump on</p>
+<p class="hint" id="gstat"></p>
 <p style="font-size:1.1em">Pump: <b id="pump">--</b></p>
 <p style="font-size:.85em;color:#888;margin-bottom:2px">Buttons</p>
 <div class="btns">
@@ -88,8 +107,188 @@ const STATUS  = 'beb9c501-ad93-4226-a33f-01efd22eb2f9';
 const SHUTOFF = 'beb9c502-ad93-4226-a33f-01efd22eb2f9';
 const HOLD    = 'beb9c503-ad93-4226-a33f-01efd22eb2f9';
 const PUMP_EN = 'beb9c504-ad93-4226-a33f-01efd22eb2f9';
+const HIST    = 'beb9c505-ad93-4226-a33f-01efd22eb2f9';
 
-let device, server, shutoffChar, holdChar, pumpEnChar;
+let device, server, shutoffChar, holdChar, pumpEnChar, histChar;
+
+// ---- temperature graph ----
+const MAX_SPAN = 10800;
+let spanS = 300;            // selected range, seconds
+let histPts = [];           // fetched from the Pico for the current range
+let livePts = [];           // built from status notifications
+let lastShutoff = NaN;
+let histSeq = 0, histWaiter = null;
+try { const v = parseInt(localStorage.getItem('span')); if (v > 0) spanS = v; } catch (e) {}
+
+function setSpan(s) {
+  spanS = s;
+  document.querySelectorAll('.rbtn').forEach(b => b.classList.toggle('on', +b.dataset.s === s));
+  try { localStorage.setItem('span', s); } catch (e) {}
+  drawGraph();
+  fetchHistory();
+}
+
+function setGStat(t) { const g = document.getElementById('gstat'); if (g) g.textContent = t; }
+
+function onHist(ev) {
+  const dv = ev.target.value;
+  if (histWaiter && dv.byteLength >= 7 && dv.getUint8(6) === histWaiter.seq) {
+    const w = histWaiter; histWaiter = null; w.resolve(dv);
+  }
+}
+
+function histRequest(spanSec, maxPts, chunk) {
+  const seq = (++histSeq) & 0xff;
+  const req = new DataView(new ArrayBuffer(9));
+  req.setUint32(0, spanSec, true); req.setUint16(4, maxPts, true); req.setUint16(6, chunk, true); req.setUint8(8, seq);
+  const p = new Promise((resolve, reject) => {
+    histWaiter = { seq, resolve };
+    setTimeout(() => { if (histWaiter && histWaiter.seq === seq) { histWaiter = null; reject(new Error('history timeout')); } }, 4000);
+  });
+  const w = histChar.writeValueWithResponse ? histChar.writeValueWithResponse(req.buffer) : histChar.writeValue(req.buffer);
+  return w.then(() => p);
+}
+
+async function fetchHistory() {
+  if (!histChar || !(device && device.gatt.connected)) return;
+  const want = spanS, pts = [];
+  let chunk = 0, total = 0, n = 0;
+  setGStat('Loading history\u2026');
+  try {
+    do {
+      const dv = await histRequest(want, 360, chunk);
+      total = dv.getUint16(0, true); n = dv.getUint8(4);
+      const now = Date.now();
+      for (let i = 0; i < n; i++) {
+        const o = 7 + i * 9;
+        const age = dv.getUint16(o, true), r = dv.getInt16(o + 2, true), t = dv.getInt16(o + 4, true);
+        const sh = dv.getInt16(o + 6, true), fl = dv.getUint8(o + 8);
+        pts.push({ t: now - age * 1000, res: r === 0x7FFF ? NaN : r / 10, ret: t === 0x7FFF ? NaN : t / 10,
+                   shutoff: sh === 0x7FFF ? NaN : sh / 10, pump: !!(fl & 1) });
+      }
+      chunk++;
+    } while (n > 0 && pts.length < total && chunk < 400);
+    if (want !== spanS) return;      // range changed while loading
+    histPts = pts;
+    setGStat('');
+    drawGraph();
+  } catch (e) {
+    console.warn('history:', e);
+    setGStat('History unavailable: ' + e.message);
+  }
+}
+
+function niceStep(raw) {
+  const p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / p;
+  return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
+}
+function agoLabel(ms) {
+  const s = Math.round(ms / 1000);
+  if (s <= 0) return 'now';
+  if (s < 60) return '-' + s + 's';
+  if (s < 3600) return '-' + Math.round(s / 60) + 'm';
+  return '-' + (s % 3600 ? (s / 3600).toFixed(1) : s / 3600) + 'h';
+}
+
+function drawGraph() {
+  const cv = document.getElementById('graph');
+  if (!cv || !cv.clientWidth) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  const now = Date.now(), t0 = now - spanS * 1000;
+  const all = histPts.concat(livePts).sort((a, b) => a.t - b.t);
+  const dedup = [];
+  for (const p of all) if (!dedup.length || p.t - dedup[dedup.length - 1].t > 1200) dedup.push(p);
+  // keep the last point before the window so lines run off the left edge
+  let first = dedup.findIndex(p => p.t >= t0);
+  if (first < 0) first = dedup.length;
+  const pts = dedup.slice(Math.max(0, first - 1));
+
+  const padL = 38, padR = 8, padT = 8, barH = 12, padB = 20 + barH + 6;
+  const barTop = H - 20 - barH;
+  const vals = [];
+  pts.forEach(p => { if (!isNaN(p.res)) vals.push(p.res); if (!isNaN(p.ret)) vals.push(p.ret); });
+  if (!isNaN(lastShutoff)) vals.push(lastShutoff);
+  pts.forEach(p => { if (!isNaN(p.shutoff)) vals.push(p.shutoff); });
+  let lo = vals.length ? Math.min.apply(null, vals) : 60, hi = vals.length ? Math.max.apply(null, vals) : 80;
+  if (hi - lo < 4) { const m = (hi + lo) / 2; lo = m - 2; hi = m + 2; }
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  const x = t => padL + (t - t0) / (spanS * 1000) * (W - padL - padR);
+  const y = v => padT + (hi - v) / (hi - lo) * (barTop - 6 - padT);
+
+  ctx.lineWidth = 1; ctx.font = '10px system-ui,sans-serif';
+  const step = niceStep((hi - lo) / 4);
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    ctx.strokeStyle = '#2a2a4a'; ctx.beginPath(); ctx.moveTo(padL, y(v)); ctx.lineTo(W - padR, y(v)); ctx.stroke();
+    ctx.fillStyle = '#888'; ctx.textAlign = 'right'; ctx.fillText(v.toFixed(step < 1 ? 1 : 0), padL - 4, y(v) + 3);
+  }
+  ctx.textAlign = 'center';
+  for (let i = 0; i <= 4; i++) {
+    const t = t0 + spanS * 1000 * i / 4;
+    ctx.strokeStyle = '#2a2a4a'; ctx.beginPath(); ctx.moveTo(x(t), padT); ctx.lineTo(x(t), barTop - 6); ctx.stroke();
+    ctx.fillStyle = '#888'; ctx.fillText(agoLabel(now - t), Math.min(Math.max(x(t), padL + 12), W - 14), H - 6);
+  }
+  const gap = Math.max(10000, spanS * 1000 / 360 * 3);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(padL, padT, W - padL - padR, barTop + barH - padT); ctx.clip();
+
+  // Shutoff threshold as a stepped line: each value holds until the next sample
+  ctx.setLineDash([4, 4]); ctx.strokeStyle = '#f44'; ctx.lineWidth = 1; ctx.beginPath();
+  let sv = NaN, st = null;
+  for (const p of pts) {
+    if (isNaN(p.shutoff)) continue;
+    if (st === null || p.t - st > gap) ctx.moveTo(x(p.t), y(p.shutoff));
+    else { ctx.lineTo(x(p.t), y(sv)); ctx.lineTo(x(p.t), y(p.shutoff)); }
+    sv = p.shutoff; st = p.t;
+  }
+  if (st !== null) ctx.lineTo(x(now), y(sv));
+  else if (!isNaN(lastShutoff)) { ctx.moveTo(padL, y(lastShutoff)); ctx.lineTo(W - padR, y(lastShutoff)); }
+  ctx.stroke(); ctx.setLineDash([]);
+
+  // Relay state bar: what the pump actually got. Runs of equal state are
+  // drawn as one rectangle on whole pixels so no seams show between samples.
+  ctx.fillStyle = '#12122a'; ctx.fillRect(padL, barTop, W - padL - padR, barH);
+  let run = null;   // {state, x0, x1}
+  const flush = () => { if (run) { ctx.fillStyle = run.state ? '#0f0' : '#3a2a2a'; ctx.fillRect(run.x0, barTop, run.x1 - run.x0, barH); run = null; } };
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p.pump === undefined) { flush(); continue; }
+    const next = i + 1 < pts.length ? pts[i + 1].t : now;
+    const x0 = Math.round(x(p.t)), x1 = Math.round(x(Math.min(next, p.t + gap)));
+    if (x1 <= x0) continue;
+    if (run && run.state === p.pump && run.x1 >= x0) run.x1 = x1;
+    else { flush(); run = { state: p.pump, x0, x1 }; }
+  }
+  flush();
+  ctx.restore();
+  ctx.fillStyle = '#888'; ctx.font = '9px system-ui,sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText('pump', padL - 4, barTop + barH - 2);
+  ctx.font = '10px system-ui,sans-serif';
+  ctx.save(); ctx.beginPath(); ctx.rect(padL, padT, W - padL - padR, barTop - 6 - padT); ctx.clip();
+  const line = (key, color) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
+    let prev = null;
+    for (const p of pts) {
+      const v = p[key];
+      if (isNaN(v)) { prev = null; continue; }
+      if (prev === null || p.t - prev > gap) ctx.moveTo(x(p.t), y(v)); else ctx.lineTo(x(p.t), y(v));
+      prev = p.t;
+    }
+    ctx.stroke();
+  };
+  line('res', '#0ff'); line('ret', '#fa0');
+  ctx.restore();
+  if (!pts.length) { ctx.fillStyle = '#666'; ctx.textAlign = 'center'; ctx.fillText('No data yet', W / 2, H / 2); }
+}
+setInterval(drawGraph, 2000);
+window.addEventListener('resize', drawGraph);
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.rbtn').forEach(b => b.classList.toggle('on', +b.dataset.s === spanS));
+});
 // True while the user wants to be connected. The Pico only serves one phone
 // at a time, so the page releases the link whenever it is in the background
 // and silently reconnects when brought back to the foreground.
@@ -154,6 +353,12 @@ function onStatus(event) {
     document.getElementById('btn' + i).classList.toggle('on', !!(btnBits & (1 << i)));
   }
 
+  lastShutoff = shutoff;
+  livePts.push({ t: Date.now(), res: resF, ret: retF, shutoff: shutoff, pump: !!pump });
+  const cutoff = Date.now() - MAX_SPAN * 1000;
+  while (livePts.length && livePts[0].t < cutoff) livePts.shift();
+  drawGraph();
+
   // Sync inputs on first update
   if (!document.getElementById('thr').dataset.set) {
     document.getElementById('thr').value = shutoff.toFixed(1);
@@ -199,6 +404,12 @@ async function attach() {
     shutoffChar = await svc.getCharacteristic(SHUTOFF);
     holdChar    = await svc.getCharacteristic(HOLD);
     pumpEnChar  = await svc.getCharacteristic(PUMP_EN);
+    histChar = null;
+    try {
+      histChar = await svc.getCharacteristic(HIST);
+      histChar.addEventListener('characteristicvaluechanged', onHist);
+      await histChar.startNotifications();
+    } catch (e) { console.warn('no history characteristic (old firmware?)', e); }
 
     statusChar.addEventListener('characteristicvaluechanged', onStatus);
     await statusChar.startNotifications();
@@ -212,6 +423,8 @@ async function attach() {
     } catch (e) { console.warn('BLE: initial read failed:', e); }
 
     ui(true);
+    drawGraph();
+    fetchHistory();
   } catch (err) {
     console.error(err);
     ui(false);

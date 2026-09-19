@@ -90,6 +90,10 @@ const HOLD    = 'beb9c503-ad93-4226-a33f-01efd22eb2f9';
 const PUMP_EN = 'beb9c504-ad93-4226-a33f-01efd22eb2f9';
 
 let device, server, shutoffChar, holdChar, pumpEnChar;
+// True while the user wants to be connected. The Pico only serves one phone
+// at a time, so the page releases the link whenever it is in the background
+// and silently reconnects when brought back to the foreground.
+let wantConnected = false;
 
 function ui(connected, loading) {
   const btn = document.getElementById('connectBtn');
@@ -167,14 +171,27 @@ async function doConnect() {
       filters: [{ name: 'Coldsuit' }],
       optionalServices: [SERVICE],
     });
-    ui(false, true);
     device.addEventListener('gattserverdisconnected', () => {
       ui(false);
       // Clear sync flags so next connect re-reads values
       delete document.getElementById('thr').dataset.set;
       delete document.getElementById('hold').dataset.set;
+      if (wantConnected && !document.hidden) setTimeout(attach, 1500);
     });
+    wantConnected = true;
+    await attach();
+  } catch (err) {
+    console.error(err);
+    ui(false);
+    if (err.name === 'NotFoundError') showMsg('Coldsuit not found. Check it is powered on and in range, and that no other phone has the page open in the foreground.');
+    else showMsg('Connection failed: ' + err.message);
+  }
+}
 
+async function attach() {
+  if (!device || !wantConnected || document.hidden) return;
+  try {
+    ui(false, true);
     server = await device.gatt.connect();
     const svc = await server.getPrimaryService(SERVICE);
 
@@ -198,15 +215,29 @@ async function doConnect() {
   } catch (err) {
     console.error(err);
     ui(false);
-    if (err.name === 'NotFoundError') showMsg('Coldsuit not found. Check it is powered on and in range.');
-    else showMsg('Connection failed: ' + err.message);
+    showMsg('Connection failed: ' + err.message);
+    if (wantConnected && !document.hidden) setTimeout(attach, 3000);
   }
 }
 
 function doDisconnect() {
+  wantConnected = false;
   if (device && device.gatt.connected) device.gatt.disconnect();
   ui(false);
 }
+
+// Release the Pico while backgrounded so another phone can connect;
+// pick the link back up when the page is shown again.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (device && device.gatt.connected) device.gatt.disconnect();
+  } else if (wantConnected) {
+    attach();
+  }
+});
+window.addEventListener('pagehide', () => {
+  if (device && device.gatt.connected) device.gatt.disconnect();
+});
 
 async function setShutoff() {
   const v = parseFloat(document.getElementById('thr').value);

@@ -68,6 +68,7 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 <p class="legend"><i style="background:#0ff"></i>Reservoir <i style="background:#fa0"></i>Return Line <i style="background:#f44"></i>Shutoff <i style="background:#0f0;height:8px"></i>Pump on</p>
 <p class="hint" id="gstat"></p>
 <p style="font-size:1.1em">Pump: <b id="pump">--</b></p>
+<p class="hint" id="uptime"></p>
 <p style="font-size:.85em;color:#888;margin-bottom:2px">Buttons</p>
 <div class="btns">
   <span class="pill" id="btn0">S2<small>GP15</small></span>
@@ -178,6 +179,13 @@ async function fetchHistory() {
   }
 }
 
+function fmtUptime(s) {
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+  if (d) return d + 'd ' + h + 'h ' + m + 'm';
+  if (h) return h + 'h ' + m + 'm';
+  if (m) return m + 'm ' + sec + 's';
+  return sec + 's';
+}
 function niceStep(raw) {
   const p = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / p;
   return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * p;
@@ -331,6 +339,7 @@ function onStatus(event) {
   const pumpEn  = dv.getUint8(19);
   // Byte 20 (buttons bitmask) exists on firmware that reports button state
   const btnBits = dv.byteLength >= 21 ? dv.getUint8(20) : 0;
+  const uptime  = dv.byteLength >= 25 ? dv.getUint32(21, true) : null;
 
   let rows = '';
   if (!isNaN(resF))  rows += '<tr><td>Reservoir</td><td>' + resF.toFixed(1) + '\u00b0F</td></tr>';
@@ -352,6 +361,8 @@ function onStatus(event) {
   for (let i = 0; i < 3; i++) {
     document.getElementById('btn' + i).classList.toggle('on', !!(btnBits & (1 << i)));
   }
+
+  document.getElementById('uptime').textContent = uptime === null ? '' : 'Controller up ' + fmtUptime(uptime);
 
   lastShutoff = shutoff;
   livePts.push({ t: Date.now(), res: resF, ret: retF, shutoff: shutoff, pump: !!pump });

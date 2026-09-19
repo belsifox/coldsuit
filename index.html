@@ -32,6 +32,10 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 #msg{color:#0f0;font-size:.9em;min-height:1.2em;margin-top:8px}
 .note{font-size:.75em;color:#555;margin-top:24px}
 .hint{font-size:.75em;color:#666;margin:2px auto 0;max-width:420px}
+.btns{display:flex;gap:10px;justify-content:center;margin:8px auto 16px;max-width:420px}
+.pill{padding:8px 14px;border-radius:16px;background:#16213e;border:1px solid #333;color:#777;font-size:.9em;transition:.15s}
+.pill small{display:block;font-size:.7em;color:inherit;opacity:.7}
+.pill.on{background:#0f0;border-color:#0f0;color:#1a1a2e}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid #0ff3;border-top-color:#0ff;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
 </style>
@@ -45,6 +49,12 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 <table><tr><th>Sensor</th><th>&deg;F</th></tr><tbody id="tb"></tbody></table>
 <p id="delta" style="font-size:1.3em"></p>
 <p style="font-size:1.1em">Pump: <b id="pump">--</b></p>
+<p style="font-size:.85em;color:#888;margin-bottom:2px">Buttons</p>
+<div class="btns">
+  <span class="pill" id="btn0">S2<small>GP15</small></span>
+  <span class="pill" id="btn1">S3<small>GP14</small></span>
+  <span class="pill" id="btn2">Ext<small>GP13</small></span>
+</div>
 <div class="ctrl">
   <label>Pump enabled:</label>
   <label style="position:relative;display:inline-block;width:50px;height:28px;margin-left:4px">
@@ -116,6 +126,8 @@ function onStatus(event) {
   const shutoff = dv.getFloat32(13, true);
   const hold    = dv.getUint16(17, true);
   const pumpEn  = dv.getUint8(19);
+  // Byte 20 (buttons bitmask) exists on firmware that reports button state
+  const btnBits = dv.byteLength >= 21 ? dv.getUint8(20) : 0;
 
   let rows = '';
   if (!isNaN(resF))  rows += '<tr><td>Reservoir</td><td>' + resF.toFixed(1) + '\u00b0F</td></tr>';
@@ -133,6 +145,10 @@ function onStatus(event) {
 
   const tog = document.getElementById('pumpTog');
   if (tog) { tog.checked = !!pumpEn; updateToggleStyle(!!pumpEn); }
+
+  for (let i = 0; i < 3; i++) {
+    document.getElementById('btn' + i).classList.toggle('on', !!(btnBits & (1 << i)));
+  }
 
   // Sync inputs on first update
   if (!document.getElementById('thr').dataset.set) {
@@ -182,7 +198,8 @@ async function doConnect() {
   } catch (err) {
     console.error(err);
     ui(false);
-    showMsg('Connection failed: ' + err.message);
+    if (err.name === 'NotFoundError') showMsg('Coldsuit not found. Check it is powered on and in range.');
+    else showMsg('Connection failed: ' + err.message);
   }
 }
 

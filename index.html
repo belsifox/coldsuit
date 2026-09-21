@@ -35,9 +35,30 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 .ranges{display:flex;gap:6px;justify-content:center;flex-wrap:wrap;margin:6px auto;max-width:420px}
 .rbtn{padding:6px 10px;font-size:.85em;background:#16213e;color:#ccc;border:1px solid #333;font-weight:400}
 .rbtn.on{background:#0ff;color:#1a1a2e;border-color:#0ff;font-weight:600}
+#pgraph{width:95%;max-width:420px;height:200px;background:#16213e;border:1px solid #333;border-radius:6px;margin:12px auto 0;display:block}
 #graph{width:95%;max-width:420px;height:250px;background:#16213e;border:1px solid #333;border-radius:6px;margin:4px auto 0;display:block}
+#graph,#pgraph{touch-action:pan-y;cursor:crosshair}
+#tip{position:fixed;z-index:9;pointer-events:none;background:#0b0b1c;border:1px solid #444;border-radius:6px;padding:6px 10px;font-size:.8em;text-align:left;color:#ddd;box-shadow:0 2px 8px #0008;white-space:nowrap}
+#tip div{line-height:1.5}
+#tip i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:middle}
+#tip .h{color:#9ad;margin-bottom:2px}
 .legend{font-size:.8em;color:#aaa;margin:4px 0 0}
 .legend i{display:inline-block;width:10px;height:3px;vertical-align:middle;margin:0 4px 0 10px}
+.seg{display:inline-flex;border:1px solid #333;border-radius:16px;overflow:hidden}
+.seg button{padding:6px 14px;font-size:.9em;background:#16213e;color:#ccc;border:none;border-radius:0;font-weight:400}
+.seg button.on{background:#0ff;color:#1a1a2e;font-weight:600}
+.panel{margin:12px auto;max-width:420px;background:#16213e;border:1px solid #333;border-radius:8px;padding:10px 12px;text-align:left}
+.panel h3{margin:0 0 6px;font-size:.95em;color:#9ad}
+.panel .row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0}
+.panel input[type=number]{width:56px;padding:6px}
+.panel select{padding:6px;background:#0f3460;color:#eee;border:1px solid #333;border-radius:4px}
+.smallbtn{padding:6px 12px;font-size:.85em}
+.danger{background:#f44;color:#fff}
+.ghost{background:#0f3460;color:#ccc;border:1px solid #444}
+#lockout{background:#4a0f1a;border-color:#f44}
+#lockout h3{color:#f66}
+#holdbar{height:6px;background:#0f3460;border-radius:3px;overflow:hidden;margin-top:4px}
+#holdfill{height:100%;background:#0f0;width:0}
 .btns{display:flex;gap:10px;justify-content:center;margin:8px auto 16px;max-width:420px}
 .pill{padding:8px 14px;border-radius:16px;background:#16213e;border:1px solid #333;color:#777;font-size:.9em;transition:.15s}
 .pill small{display:block;font-size:.7em;color:inherit;opacity:.7}
@@ -65,9 +86,12 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
   <button class="rbtn" data-s="10800" onclick="setSpan(10800)">3h</button>
 </div>
 <canvas id="graph"></canvas>
-<p class="legend"><i style="background:#0ff"></i>Reservoir <i style="background:#fa0"></i>Return Line <i style="background:#f44"></i>Shutoff <i style="background:#0f0;height:8px"></i>Pump on</p>
+<p class="legend"><i style="background:#0ff"></i>Reservoir <i style="background:#fa0"></i>Return Line <i style="background:#f44"></i>Shutoff <i style="background:#0f0;height:8px"></i>Pump on <i style="background:#0f04;border:1px solid #0f08"></i>On hold <i style="background:#f804;border:1px solid #f808"></i>Off hold <i style="background:#f446;border:1px solid #f44"></i>Lockout</p>
 <p class="hint" id="gstat"></p>
+<canvas id="pgraph"></canvas>
+<p class="legend"><i style="background:#fd0"></i>Rail V <i style="background:#f80"></i>Pump V <i style="background:#8cf"></i>Rail A <i style="background:#c8f"></i>Pump A</p>
 <p style="font-size:1.1em">Pump: <b id="pump">--</b></p>
+<p id="power" style="font-size:.95em"></p>
 <p class="hint" id="uptime"></p>
 <p style="font-size:.85em;color:#888;margin-bottom:2px">Buttons</p>
 <div class="btns">
@@ -75,13 +99,44 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
   <span class="pill" id="btn1">S3<small>GP14</small></span>
   <span class="pill" id="btn2">Ext<small>GP13</small></span>
 </div>
-<div class="ctrl">
-  <label>Pump enabled:</label>
-  <label style="position:relative;display:inline-block;width:50px;height:28px;margin-left:4px">
-    <input type="checkbox" id="pumpTog" checked onchange="togglePump()" style="opacity:0;width:0;height:0">
-    <span id="togTrack" style="position:absolute;cursor:pointer;inset:0;background:#0f0;border-radius:28px;transition:.3s"></span>
-    <span id="togKnob" style="position:absolute;left:25px;top:3px;width:22px;height:22px;background:#fff;border-radius:50%;transition:.3s"></span>
-  </label>
+<div class="panel" id="lockout" hidden>
+  <h3>LOCKOUT</h3>
+  <div class="row"><span id="lockreason"></span></div>
+  <div class="row"><span class="hint" style="margin:0">Pump is held off. Buttons are ignored until cleared here.</span></div>
+  <div class="row"><button class="smallbtn" onclick="ctrl(5, 0)">Clear lockout</button></div>
+</div>
+
+<div class="panel">
+  <h3>Control</h3>
+  <div class="row">
+    <label>Mode:</label>
+    <span class="seg"><button id="modeAuto" onclick="ctrl(1, 0)">Auto</button><button id="modeMan" onclick="ctrl(1, 1)">Manual</button></span>
+    <span id="manualCtl" hidden><button class="smallbtn" id="manualBtn" onclick="toggleManual()">Pump: --</button></span>
+  </div>
+  <p class="hint" id="modehint" style="margin:0 0 6px"></p>
+  <div class="row"><b id="holdtxt" style="color:#ddd">No hold</b><button class="smallbtn ghost" id="holdclr" onclick="ctrl(3, 0)" hidden>Clear hold</button></div>
+  <div id="holdbar" hidden><div id="holdfill"></div></div>
+  <div class="row">
+    <select id="holdkind"><option value="1">Force ON</option><option value="2">Force OFF</option></select>
+    <input type="number" id="holdH" min="0" max="59" value="0"><span>h</span>
+    <input type="number" id="holdM" min="0" max="59" value="5"><span>m</span>
+    <input type="number" id="holdS" min="0" max="59" value="0"><span>s</span>
+    <button class="smallbtn" onclick="setHold()">Set hold</button>
+  </div>
+  <div class="row"><button class="smallbtn ghost" id="lockbtn" onclick="lockoutClick()">Lockout</button></div>
+  <details style="margin-top:8px;font-size:.85em;color:#bbb">
+    <summary style="cursor:pointer;color:#9ad">Button guide</summary>
+    <p style="margin:6px 0 2px;color:#ccc">The external button and S2 on the board do the same thing. S3 switches Auto/Manual. Short press = under half a second, long press = hold it longer. Presses within 0.6 s of each other count as one sequence.</p>
+    <table style="width:100%;margin:6px 0;font-size:1em"><tbody>
+      <tr><td style="padding:4px 8px;text-align:left"><b style="color:#0ff">Manual</b> any press</td><td style="padding:4px 8px;text-align:left">pump on / off</td></tr>
+      <tr><td style="padding:4px 8px;text-align:left"><b style="color:#0ff">Manual</b> hold 5 s</td><td style="padding:4px 8px;text-align:left">switch to Auto (in Auto a 5 s hold does nothing)</td></tr>
+      <tr><td style="padding:4px 8px;text-align:left"><b style="color:#0ff">Auto</b> long press</td><td style="padding:4px 8px;text-align:left">force pump ON for 5 min</td></tr>
+      <tr><td style="padding:4px 8px;text-align:left"><b style="color:#0ff">Auto</b> 2 short presses</td><td style="padding:4px 8px;text-align:left">force pump OFF for 5 min</td></tr>
+      <tr><td style="padding:4px 8px;text-align:left"><b style="color:#0ff">Auto</b> 3 short presses</td><td style="padding:4px 8px;text-align:left">cancel the hold</td></tr>
+      <tr><td style="padding:4px 8px;text-align:left"><b style="color:#0ff">Auto</b> 5+ short presses</td><td style="padding:4px 8px;text-align:left">lockout (pump off until cleared here)</td></tr>
+    </tbody></table>
+    <p style="margin:2px 0;color:#aaa">Repeating a hold restarts its timer. In lockout the buttons do nothing. The controller boots in Manual with the pump off.</p>
+  </details>
 </div>
 
 <div class="ctrl">
@@ -99,9 +154,12 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 <div id="msg"></div>
 </div>
 
-<p class="note">Requires HTTPS &amp; Chrome/Edge with Web Bluetooth.</p>
+<p class="note">Requires HTTPS &amp; Chrome/Edge with Web Bluetooth. &middot; UI v<span id="ver">?</span> &middot; firmware v<span id="fwver">?</span></p>
+<div id="tip" hidden></div>
 
+<script src="./version.js"></script>
 <script>
+document.addEventListener('DOMContentLoaded', () => { document.getElementById('ver').textContent = APP_VERSION; });
 // BLE UUIDs: must match cold.py
 const SERVICE = 'beb9c500-ad93-4226-a33f-01efd22eb2f9';
 const STATUS  = 'beb9c501-ad93-4226-a33f-01efd22eb2f9';
@@ -109,11 +167,18 @@ const SHUTOFF = 'beb9c502-ad93-4226-a33f-01efd22eb2f9';
 const HOLD    = 'beb9c503-ad93-4226-a33f-01efd22eb2f9';
 const PUMP_EN = 'beb9c504-ad93-4226-a33f-01efd22eb2f9';
 const HIST    = 'beb9c505-ad93-4226-a33f-01efd22eb2f9';
+const CTRL    = 'beb9c506-ad93-4226-a33f-01efd22eb2f9';
+const LOCK_REASONS = { 0: 'none', 1: 'pump current low while on', 2: '5 button presses', 3: 'web UI', 4: 'rail undervoltage', 5: 'rail overcurrent', 6: 'pump undervoltage', 7: 'pump overcurrent', 8: 'temperature out of range' };
 
-let device, server, shutoffChar, holdChar, pumpEnChar, histChar;
+let device, server, shutoffChar, holdChar, ctrlChar, histChar;
+let curState = { manual: false, relay: false, hold: 0, lockout: 0 };
 
 // ---- temperature graph ----
 const MAX_SPAN = 10800;
+// The right edge of the graphs trails wall-clock by this much: one sampling
+// interval plus BLE latency, so data at the edge has already arrived and
+// slides in instead of popping in.
+const EDGE_LAG_MS = 2500;
 let spanS = 300;            // selected range, seconds
 let histPts = [];           // fetched from the Pico for the current range
 let livePts = [];           // built from status notifications
@@ -161,16 +226,23 @@ async function fetchHistory() {
       total = dv.getUint16(0, true); n = dv.getUint8(4);
       const now = Date.now();
       for (let i = 0; i < n; i++) {
-        const o = 7 + i * 9;
-        const age = dv.getUint16(o, true), r = dv.getInt16(o + 2, true), t = dv.getInt16(o + 4, true);
-        const sh = dv.getInt16(o + 6, true), fl = dv.getUint8(o + 8);
-        pts.push({ t: now - age * 1000, res: r === 0x7FFF ? NaN : r / 10, ret: t === 0x7FFF ? NaN : t / 10,
-                   shutoff: sh === 0x7FFF ? NaN : sh / 10, pump: !!(fl & 1) });
+        const o = 7 + i * 20;
+        const age = dv.getUint32(o, true), r = dv.getInt16(o + 4, true), t = dv.getInt16(o + 6, true);
+        const sh = dv.getInt16(o + 8, true), fl = dv.getUint8(o + 10);
+        const ma = dv.getInt16(o + 11, true), mv = dv.getUint16(o + 13, true);
+        const pmv = dv.getUint16(o + 15, true), rma = dv.getInt16(o + 17, true), lr = dv.getUint8(o + 19);
+        pts.push({ t: now - age, res: r === 0x7FFF ? NaN : r / 10, ret: t === 0x7FFF ? NaN : t / 10,
+                   shutoff: sh === 0x7FFF ? NaN : sh / 10, pump: !!(fl & 1),
+                   manual: !!(fl & 2), hold: (fl >> 2) & 3, lockout: (fl & 16) ? (lr || 3) : 0,
+                   pumpA: ma === 0x7FFF ? NaN : ma / 1000, railV: mv === 0xFFFF ? NaN : mv / 1000,
+                   pumpV: pmv === 0xFFFF ? NaN : pmv / 1000, railA: rma === 0x7FFF ? NaN : rma / 1000 });
       }
       chunk++;
     } while (n > 0 && pts.length < total && chunk < 400);
     if (want !== spanS) return;      // range changed while loading
     histPts = pts;
+    const newest = pts.reduce((m, p) => Math.max(m, p.t), 0);
+    livePts = livePts.filter(p => p.t > newest + 300);
     setGStat('');
     drawGraph();
   } catch (e) {
@@ -179,6 +251,10 @@ async function fetchHistory() {
   }
 }
 
+function fmtPower(mV, mA) {
+  if (mV === 0xFFFF) return 'n/a';
+  return (mV / 1000).toFixed(2) + ' V, ' + (mA === 0x7FFF ? '?' : (mA / 1000).toFixed(2)) + ' A';
+}
 function fmtUptime(s) {
   const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
   if (d) return d + 'd ' + h + 'h ' + m + 'm';
@@ -198,6 +274,141 @@ function agoLabel(ms) {
   return '-' + (s % 3600 ? (s / 3600).toFixed(1) : s / 3600) + 'h';
 }
 
+// ---- crosshair / tooltip ----
+// hover: {frac: 0..1 across the plot width, src canvas id, cx, cy client coords}
+let hover = null;
+const PADL = 38, PADR_T = 8, PADR_P = 36;
+
+function setHover(ev, cv) {
+  const r = cv.getBoundingClientRect();
+  const padR = cv.id === 'pgraph' ? PADR_P : PADR_T;
+  const frac = (ev.clientX - r.left - PADL) / (r.width - PADL - padR);
+  if (frac < -0.02 || frac > 1.02) { hover = null; return; }
+  hover = { frac: Math.min(1, Math.max(0, frac)), src: cv.id, cx: ev.clientX, cy: ev.clientY };
+}
+
+function nearestPt(pts, t) {
+  if (!pts.length) return null;
+  let lo = 0, hi = pts.length - 1;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (pts[m].t < t) lo = m + 1; else hi = m; }
+  const a = pts[lo], b = pts[lo - 1];
+  return (b && Math.abs(b.t - t) < Math.abs(a.t - t)) ? b : a;
+}
+
+function fmtF(v) { return isNaN(v) ? '--' : v.toFixed(1) + '°F'; }
+function fmtVA(v, a) { return (isNaN(v) ? '--' : v.toFixed(2) + ' V') + ', ' + (isNaN(a) ? '--' : a.toFixed(3) + ' A'); }
+function clock(t) { const d = new Date(t); return d.toLocaleTimeString([], { hour12: false }); }
+
+function updateTip(hp) {
+  const tip = document.getElementById('tip');
+  if (!hp || !hover) { tip.hidden = true; return; }
+  tip.innerHTML =
+    '<div class="h">' + clock(hp.t) + ' (' + agoLabel(Date.now() - hp.t).replace('-', '') + ' ago)</div>' +
+    '<div><i style="background:#0ff"></i>Reservoir ' + fmtF(hp.res) + '</div>' +
+    '<div><i style="background:#fa0"></i>Return Line ' + fmtF(hp.ret) + '</div>' +
+    '<div><i style="background:#f44"></i>Shutoff ' + fmtF(hp.shutoff) + '</div>' +
+    '<div><i style="background:' + (hp.pump ? '#0f0' : '#3a2a2a') + '"></i>Pump ' + (hp.pump === undefined ? '--' : hp.pump ? 'ON' : 'OFF') +
+      (hp.manual === undefined ? '' : ' (' + (hp.manual ? 'manual' : 'auto') + (hp.hold ? ', ' + (hp.hold === 1 ? 'ON' : 'OFF') + ' hold' : '') + ')') + '</div>' +
+    (hp.lockout ? '<div><i style="background:#f44"></i>Lockout: ' + (LOCK_REASONS[hp.lockout] || hp.lockout) + '</div>' : '') +
+    '<div><i style="background:#fd0"></i>Rail ' + fmtVA(hp.railV, hp.railA) + '</div>' +
+    '<div><i style="background:#f80"></i>Pump ' + fmtVA(hp.pumpV, hp.pumpA) + '</div>';
+  tip.hidden = false;
+  const w = tip.offsetWidth, hgt = tip.offsetHeight;
+  let left = hover.cx + 14, top = hover.cy + 14;
+  if (left + w > window.innerWidth - 8) left = hover.cx - w - 14;
+  if (top + hgt > window.innerHeight - 8) top = hover.cy - hgt - 14;
+  tip.style.left = Math.max(4, left) + 'px'; tip.style.top = Math.max(4, top) + 'px';
+}
+
+function drawCursor(ctx, xpx, top, bottom, marks) {
+  ctx.save();
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = '#fff8'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(xpx, top); ctx.lineTo(xpx, bottom); ctx.stroke();
+  ctx.setLineDash([]);
+  for (const [ypx, color] of marks) {
+    if (isNaN(ypx)) continue;
+    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(xpx, ypx, 3.5, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#000'; ctx.stroke();
+  }
+  ctx.restore();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  for (const id of ['graph', 'pgraph']) {
+    const cv = document.getElementById(id);
+    cv.addEventListener('pointermove', ev => { if (ev.pointerType === 'mouse' || ev.buttons) setHover(ev, cv); });
+    cv.addEventListener('pointerdown', ev => { setHover(ev, cv); });
+    cv.addEventListener('pointerleave', ev => { if (ev.pointerType === 'mouse') hover = null; });
+  }
+  // a tap anywhere else dismisses a touch-pinned cursor
+  document.addEventListener('pointerdown', ev => { if (!(ev.target && (ev.target.id === 'graph' || ev.target.id === 'pgraph'))) hover = null; });
+});
+
+function windowPts(t0) {
+  const all = histPts.concat(livePts).sort((a, b) => a.t - b.t);
+  // keep the last point before the window so lines run off the left edge
+  let first = all.findIndex(p => p.t >= t0);
+  if (first < 0) first = all.length;
+  return all.slice(Math.max(0, first - 1));
+}
+
+function drawPowerGraph(pts, t0, now, hp) {
+  const cv = document.getElementById('pgraph');
+  if (!cv || !cv.clientWidth) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const padL = 38, padR = 36, padT = 8, padB = 20;
+  const gap = Math.max(10000, spanS * 1000 / 360 * 3);
+
+  const vs = [], as = [];
+  pts.forEach(p => { ['railV', 'pumpV'].forEach(k => { if (!isNaN(p[k])) vs.push(p[k]); }); ['railA', 'pumpA'].forEach(k => { if (!isNaN(p[k])) as.push(p[k]); }); });
+  if (!vs.length && !as.length) { ctx.fillStyle = '#666'; ctx.font = '10px system-ui,sans-serif'; ctx.textAlign = 'center'; ctx.fillText('No power data', W / 2, H / 2); return; }
+  // volts: a window around what was seen, at least 2 V tall; amps: 0 .. round max
+  let vlo = vs.length ? Math.min.apply(null, vs) : 0, vhi = vs.length ? Math.max.apply(null, vs) : 12;
+  if (vhi - vlo < 2) { const m = (vhi + vlo) / 2; vlo = m - 1; vhi = m + 1; }
+  const vpad = (vhi - vlo) * 0.1; vlo -= vpad; vhi += vpad;
+  let aMax = as.length ? Math.max.apply(null, as) : 1; aMax = Math.max(0.5, Math.ceil(aMax * 2) / 2);
+
+  const x = t => padL + (t - t0) / (spanS * 1000) * (W - padL - padR);
+  const yv = v => padT + (vhi - v) / (vhi - vlo) * (H - padT - padB);
+  const ya = a => padT + (aMax - a) / aMax * (H - padT - padB);
+
+  ctx.lineWidth = 1; ctx.font = '10px system-ui,sans-serif';
+  const vstep = niceStep((vhi - vlo) / 4);
+  for (let v = Math.ceil(vlo / vstep) * vstep; v <= vhi + 1e-9; v += vstep) {
+    ctx.strokeStyle = '#2a2a4a'; ctx.beginPath(); ctx.moveTo(padL, yv(v)); ctx.lineTo(W - padR, yv(v)); ctx.stroke();
+    ctx.fillStyle = '#fd0'; ctx.textAlign = 'right'; ctx.fillText(v.toFixed(vstep < 1 ? 1 : 0) + 'V', padL - 4, yv(v) + 3);
+  }
+  ctx.fillStyle = '#c8f'; ctx.textAlign = 'left';
+  for (let a = 0; a <= aMax + 1e-9; a += aMax / 2) ctx.fillText(a.toFixed(1) + 'A', W - padR + 4, ya(a) + 3);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#888';
+  for (let i = 0; i <= 4; i++) {
+    const t = t0 + spanS * 1000 * i / 4;
+    ctx.strokeStyle = '#2a2a4a'; ctx.beginPath(); ctx.moveTo(x(t), padT); ctx.lineTo(x(t), H - padB); ctx.stroke();
+    ctx.fillText(agoLabel(Date.now() - t), Math.min(Math.max(x(t), padL + 12), W - padR - 12), H - 6);
+  }
+
+  ctx.save(); ctx.beginPath(); ctx.rect(padL, padT, W - padL - padR, H - padT - padB); ctx.clip();
+  const line = (key, color, yf, width) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+    let prev = null;
+    for (const p of pts) {
+      const v = p[key];
+      if (isNaN(v)) { prev = null; continue; }
+      if (prev === null || p.t - prev > gap) ctx.moveTo(x(p.t), yf(v)); else ctx.lineTo(x(p.t), yf(v));
+      prev = p.t;
+    }
+    ctx.stroke();
+  };
+  line('railV', '#fd0', yv, 2); line('pumpV', '#f80', yv, 2);
+  line('railA', '#8cf', ya, 1.5); line('pumpA', '#c8f', ya, 1.5);
+  ctx.restore();
+  if (hp) drawCursor(ctx, x(hp.t), padT, H - padB, [[yv(hp.railV), '#fd0'], [yv(hp.pumpV), '#f80'], [ya(hp.railA), '#8cf'], [ya(hp.pumpA), '#c8f']]);
+}
+
 function drawGraph() {
   const cv = document.getElementById('graph');
   if (!cv || !cv.clientWidth) return;
@@ -207,14 +418,14 @@ function drawGraph() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
-  const now = Date.now(), t0 = now - spanS * 1000;
-  const all = histPts.concat(livePts).sort((a, b) => a.t - b.t);
-  const dedup = [];
-  for (const p of all) if (!dedup.length || p.t - dedup[dedup.length - 1].t > 1200) dedup.push(p);
-  // keep the last point before the window so lines run off the left edge
-  let first = dedup.findIndex(p => p.t >= t0);
-  if (first < 0) first = dedup.length;
-  const pts = dedup.slice(Math.max(0, first - 1));
+  const now = Date.now() - EDGE_LAG_MS, t0 = now - spanS * 1000;
+  const pts = windowPts(t0);
+  let hp = null;
+  if (hover) {
+    const ht = t0 + hover.frac * spanS * 1000;
+    hp = nearestPt(pts, ht);
+    if (hp && Math.abs(hp.t - ht) > Math.max(10000, spanS * 1000 / 360 * 3)) hp = null;
+  }
 
   const padL = 38, padR = 8, padT = 8, barH = 12, padB = 20 + barH + 6;
   const barTop = H - 20 - barH;
@@ -238,11 +449,38 @@ function drawGraph() {
   for (let i = 0; i <= 4; i++) {
     const t = t0 + spanS * 1000 * i / 4;
     ctx.strokeStyle = '#2a2a4a'; ctx.beginPath(); ctx.moveTo(x(t), padT); ctx.lineTo(x(t), barTop - 6); ctx.stroke();
-    ctx.fillStyle = '#888'; ctx.fillText(agoLabel(now - t), Math.min(Math.max(x(t), padL + 12), W - 14), H - 6);
+    ctx.fillStyle = '#888'; ctx.fillText(agoLabel(Date.now() - t), Math.min(Math.max(x(t), padL + 12), W - 14), H - 6);
   }
   const gap = Math.max(10000, spanS * 1000 / 360 * 3);
   ctx.save();
   ctx.beginPath(); ctx.rect(padL, padT, W - padL - padR, barTop + barH - padT); ctx.clip();
+
+  // Hold and lockout periods as shaded bands behind the traces
+  const bands = [];
+  let band = null;
+  const keyOf = p => p.lockout ? 'L' + p.lockout : p.hold ? 'H' + p.hold : '';
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i], k = keyOf(p);
+    const next = i + 1 < pts.length ? pts[i + 1].t : now;
+    const end = Math.min(next, p.t + gap);
+    if (band && band.k === k && p.t <= band.end + 1) band.end = end;
+    else { if (band && band.k) bands.push(band); band = { k, start: p.t, end, p }; }
+  }
+  if (band && band.k) bands.push(band);
+  ctx.font = '9px system-ui,sans-serif'; ctx.textAlign = 'left';
+  for (const b of bands) {
+    const x0 = x(b.start), x1 = x(b.end);
+    if (b.k[0] === 'L') {
+      ctx.fillStyle = 'rgba(255,68,68,0.22)'; ctx.fillRect(x0, padT, x1 - x0, barTop - 6 - padT);
+      ctx.strokeStyle = '#f44'; ctx.beginPath(); ctx.moveTo(x0, padT); ctx.lineTo(x0, barTop - 6); ctx.stroke();
+      ctx.fillStyle = '#f88'; ctx.fillText('LOCKOUT: ' + (LOCK_REASONS[b.p.lockout] || b.p.lockout), x0 + 3, padT + 10);
+    } else {
+      ctx.fillStyle = b.k === 'H1' ? 'rgba(0,255,0,0.10)' : 'rgba(255,136,0,0.12)';
+      ctx.fillRect(x0, padT, x1 - x0, barTop - 6 - padT);
+      ctx.fillStyle = b.k === 'H1' ? '#6f6' : '#fb6'; ctx.fillText(b.k === 'H1' ? 'ON hold' : 'OFF hold', x0 + 3, padT + 10);
+    }
+  }
+  ctx.font = '10px system-ui,sans-serif';
 
   // Shutoff threshold as a stepped line: each value holds until the next sample
   ctx.setLineDash([4, 4]); ctx.strokeStyle = '#f44'; ctx.lineWidth = 1; ctx.beginPath();
@@ -260,15 +498,15 @@ function drawGraph() {
   // Relay state bar: what the pump actually got. Runs of equal state are
   // drawn as one rectangle on whole pixels so no seams show between samples.
   ctx.fillStyle = '#12122a'; ctx.fillRect(padL, barTop, W - padL - padR, barH);
-  let run = null;   // {state, x0, x1}
-  const flush = () => { if (run) { ctx.fillStyle = run.state ? '#0f0' : '#3a2a2a'; ctx.fillRect(run.x0, barTop, run.x1 - run.x0, barH); run = null; } };
+  let run = null;   // {state, x0, x1} in fractional pixels
+  const flush = () => { if (run) { ctx.fillStyle = run.state ? '#0f0' : '#3a2a2a'; ctx.fillRect(run.x0, barTop, run.x1 - run.x0 + 1, barH); run = null; } };
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
     if (p.pump === undefined) { flush(); continue; }
     const next = i + 1 < pts.length ? pts[i + 1].t : now;
-    const x0 = Math.round(x(p.t)), x1 = Math.round(x(Math.min(next, p.t + gap)));
+    const x0 = x(p.t), x1 = x(Math.min(next, p.t + gap));
     if (x1 <= x0) continue;
-    if (run && run.state === p.pump && run.x1 >= x0) run.x1 = x1;
+    if (run && run.state === p.pump && run.x1 >= x0 - 0.01) run.x1 = x1;
     else { flush(); run = { state: p.pump, x0, x1 }; }
   }
   flush();
@@ -290,9 +528,19 @@ function drawGraph() {
   };
   line('res', '#0ff'); line('ret', '#fa0');
   ctx.restore();
+  if (hp) drawCursor(ctx, x(hp.t), padT, barTop + barH, [[y(hp.res), '#0ff'], [y(hp.ret), '#fa0'], [y(hp.shutoff), '#f44']]);
+  drawPowerGraph(pts, t0, now, hp);
+  updateTip(hp);
   if (!pts.length) { ctx.fillStyle = '#666'; ctx.textAlign = 'center'; ctx.fillText('No data yet', W / 2, H / 2); }
 }
-setInterval(drawGraph, 2000);
+(function animate() {
+  let last = 0;
+  function frame(ts) {
+    if (!document.hidden && ts - last >= 50 && document.getElementById('readings').style.display !== 'none') { last = ts; drawGraph(); }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
 window.addEventListener('resize', drawGraph);
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.rbtn').forEach(b => b.classList.toggle('on', +b.dataset.s === spanS));
@@ -336,10 +584,17 @@ function onStatus(event) {
   const pump    = dv.getUint8(12);
   const shutoff = dv.getFloat32(13, true);
   const hold    = dv.getUint16(17, true);
-  const pumpEn  = dv.getUint8(19);
+  const relayOn = dv.getUint8(19);
   // Byte 20 (buttons bitmask) exists on firmware that reports button state
   const btnBits = dv.byteLength >= 21 ? dv.getUint8(20) : 0;
   const uptime  = dv.byteLength >= 25 ? dv.getUint32(21, true) : null;
+  const fw = dv.byteLength >= 34 ? dv.getUint8(33) : null;
+  const pw = dv.byteLength >= 33 ? {
+    railV: dv.getUint16(25, true), railA: dv.getInt16(27, true),
+    pumpV: dv.getUint16(29, true), pumpA: dv.getInt16(31, true) } : null;
+  const st = dv.byteLength >= 45 ? {
+    manual: !!dv.getUint8(34), hold: dv.getUint8(35), holdLeft: dv.getUint32(36, true),
+    holdTotal: dv.getUint32(40, true), lockout: dv.getUint8(44) } : null;
 
   let rows = '';
   if (!isNaN(resF))  rows += '<tr><td>Reservoir</td><td>' + resF.toFixed(1) + '\u00b0F</td></tr>';
@@ -355,17 +610,46 @@ function onStatus(event) {
   p.textContent = pump ? 'ON' : 'OFF';
   p.style.color = pump ? '#0f0' : '#f44';
 
-  const tog = document.getElementById('pumpTog');
-  if (tog) { tog.checked = !!pumpEn; updateToggleStyle(!!pumpEn); }
+  if (st) {
+    curState = { manual: st.manual, relay: !!pump, hold: st.hold, lockout: st.lockout };
+    document.getElementById('modeAuto').classList.toggle('on', !st.manual);
+    document.getElementById('modeMan').classList.toggle('on', st.manual);
+    document.getElementById('manualCtl').hidden = !st.manual;
+    document.getElementById('manualBtn').textContent = 'Pump: ' + (pump ? 'ON' : 'OFF');
+    document.getElementById('modehint').textContent = st.manual
+      ? 'Manual: the control button or this switch toggles the pump. Hold it 5 s to switch to Auto.'
+      : 'Auto: pump follows the return-line temperature. Long press = 5 min ON hold, 2 presses = 5 min OFF hold, 3 = clear hold.';
+    const ht = document.getElementById('holdtxt'), hb = document.getElementById('holdbar');
+    if (st.hold) {
+      ht.textContent = (st.hold === 1 ? 'ON' : 'OFF') + ' hold, ' + fmtUptime(st.holdLeft) + ' left';
+      ht.style.color = st.hold === 1 ? '#0f0' : '#f80';
+      hb.hidden = false;
+      document.getElementById('holdfill').style.width = (st.holdTotal ? 100 * st.holdLeft / st.holdTotal : 0) + '%';
+      document.getElementById('holdfill').style.background = st.hold === 1 ? '#0f0' : '#f80';
+    } else { ht.textContent = 'No hold'; ht.style.color = '#ddd'; hb.hidden = true; }
+    document.getElementById('holdclr').hidden = !st.hold;
+    document.getElementById('lockout').hidden = !st.lockout;
+    document.getElementById('lockreason').textContent = st.lockout ? 'Reason: ' + (LOCK_REASONS[st.lockout] || st.lockout) : '';
+    document.getElementById('lockbtn').hidden = !!st.lockout;
+    if (!st.lockout) { document.getElementById('lockbtn').textContent = 'Lockout'; lockArmed = false; }
+  }
 
   for (let i = 0; i < 3; i++) {
     document.getElementById('btn' + i).classList.toggle('on', !!(btnBits & (1 << i)));
   }
 
   document.getElementById('uptime').textContent = uptime === null ? '' : 'Controller up ' + fmtUptime(uptime);
+  document.getElementById('fwver').textContent = fw === null ? '?' : fw;
+  document.getElementById('power').innerHTML = pw === null ? '' :
+    '12V rail: <b>' + fmtPower(pw.railV, pw.railA) + '</b> &nbsp; Pump: <b>' + fmtPower(pw.pumpV, pw.pumpA) + '</b>';
 
   lastShutoff = shutoff;
-  livePts.push({ t: Date.now(), res: resF, ret: retF, shutoff: shutoff, pump: !!pump });
+  livePts.push({ t: Date.now(), res: resF, ret: retF, shutoff: shutoff, pump: !!pump,
+                 manual: st ? st.manual : undefined, hold: st ? st.hold : 0, lockout: st ? st.lockout : 0,
+                 pumpA: pw && pw.pumpA !== 0x7FFF ? pw.pumpA / 1000 : NaN,
+                 railV: pw && pw.railV !== 0xFFFF ? pw.railV / 1000 : NaN,
+                 pumpV: pw && pw.pumpV !== 0xFFFF ? pw.pumpV / 1000 : NaN,
+                 railA: pw && pw.railA !== 0x7FFF ? pw.railA / 1000 : NaN });
   const cutoff = Date.now() - MAX_SPAN * 1000;
   while (livePts.length && livePts[0].t < cutoff) livePts.shift();
   drawGraph();
@@ -414,7 +698,8 @@ async function attach() {
     const statusChar = await svc.getCharacteristic(STATUS);
     shutoffChar = await svc.getCharacteristic(SHUTOFF);
     holdChar    = await svc.getCharacteristic(HOLD);
-    pumpEnChar  = await svc.getCharacteristic(PUMP_EN);
+    ctrlChar = null;
+    try { ctrlChar = await svc.getCharacteristic(CTRL); } catch (e) { console.warn('no control characteristic (old firmware?)', e); }
     histChar = null;
     try {
       histChar = await svc.getCharacteristic(HIST);
@@ -485,21 +770,28 @@ async function setHold() {
   } catch (err) { showMsg('Write error: ' + err.message); }
 }
 
-async function togglePump() {
-  const on = document.getElementById('pumpTog').checked;
-  updateToggleStyle(on);
-  if (!pumpEnChar) return;
+let lockArmed = false;
+async function ctrl(cmd, arg) {
+  if (!ctrlChar) { showMsg('Controller firmware too old for this control'); return; }
   try {
-    await pumpEnChar.writeValueWithResponse(new Uint8Array([on ? 1 : 0]));
-    showMsg('Pump ' + (on ? 'enabled' : 'disabled'));
+    const buf = new ArrayBuffer(5);
+    const v = new DataView(buf); v.setUint8(0, cmd); v.setUint32(1, arg >>> 0, true);
+    await ctrlChar.writeValueWithResponse(new Uint8Array(buf));
   } catch (err) { showMsg('Write error: ' + err.message); }
 }
-
-function updateToggleStyle(on) {
-  const knob = document.getElementById('togKnob');
-  const track = document.getElementById('togTrack');
-  track.style.background = on ? '#0f0' : '#f44';
-  knob.style.left = on ? '25px' : '3px';
+function toggleManual() { ctrl(6, curState.relay ? 0 : 1); }
+function setHold() {
+  const kind = +document.getElementById('holdkind').value;
+  const s = (+document.getElementById('holdH').value || 0) * 3600 + (+document.getElementById('holdM').value || 0) * 60 + (+document.getElementById('holdS').value || 0);
+  if (s <= 0) { showMsg('Hold duration must be more than 0'); return; }
+  ctrl(2, ((kind & 0xFF) << 24 | Math.min(s, 0xFFFFFF)) >>> 0);
+  showMsg((kind === 1 ? 'ON' : 'OFF') + ' hold for ' + fmtUptime(s));
+}
+function lockoutClick() {
+  const b = document.getElementById('lockbtn');
+  if (!lockArmed) { lockArmed = true; b.textContent = 'Confirm lockout?'; b.classList.add('danger'); setTimeout(() => { if (lockArmed) { lockArmed = false; b.textContent = 'Lockout'; b.classList.remove('danger'); } }, 4000); return; }
+  lockArmed = false; b.textContent = 'Lockout'; b.classList.remove('danger');
+  ctrl(4, 0);
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
 </script>

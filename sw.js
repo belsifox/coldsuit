@@ -1,5 +1,6 @@
-const CACHE = 'coldsuit-v8';
-const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
+importScripts('./version.js');
+const CACHE = 'coldsuit-v' + APP_VERSION;
+const ASSETS = ['./', './index.html', './version.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));

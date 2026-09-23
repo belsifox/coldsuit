@@ -102,7 +102,7 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 <div class="panel" id="lockout" hidden>
   <h3>LOCKOUT</h3>
   <div class="row"><span id="lockreason"></span></div>
-  <div class="row"><span class="hint" style="margin:0">Pump is held off. Buttons are ignored until cleared here.</span></div>
+  <div class="row"><span class="hint" style="margin:0" id="lockhint">Pump is held off. Buttons are ignored until cleared here.</span></div>
   <div class="row"><button class="smallbtn" onclick="ctrl(5, 0)">Clear lockout</button></div>
 </div>
 
@@ -168,7 +168,7 @@ const HOLD    = 'beb9c503-ad93-4226-a33f-01efd22eb2f9';
 const PUMP_EN = 'beb9c504-ad93-4226-a33f-01efd22eb2f9';
 const HIST    = 'beb9c505-ad93-4226-a33f-01efd22eb2f9';
 const CTRL    = 'beb9c506-ad93-4226-a33f-01efd22eb2f9';
-const LOCK_REASONS = { 0: 'none', 1: 'pump current low while on', 2: '5 button presses', 3: 'web UI', 4: 'rail undervoltage', 5: 'rail overcurrent', 6: 'pump undervoltage', 7: 'pump overcurrent', 8: 'temperature out of range' };
+const LOCK_REASONS = { 0: 'none', 1: 'pump current low while on', 2: '5 button presses', 3: 'web UI', 4: 'rail undervoltage', 5: 'rail overcurrent', 6: 'pump undervoltage', 7: 'pump overcurrent', 8: 'temperature out of range', 9: 'no 12 V supply' };
 
 let device, server, shutoffChar, holdChar, ctrlChar, histChar;
 let curState = { manual: false, relay: false, hold: 0, lockout: 0 };
@@ -203,6 +203,27 @@ function onHist(ev) {
   }
 }
 
+// ---- GATT queue ----
+// Web Bluetooth allows one GATT operation at a time; overlapping ones fail
+// with "GATT operation already in progress". Every read/write goes through
+// this queue, and that error (or a transient NetworkError) is retried.
+let gattChain = Promise.resolve();
+const isBusyErr = e => /in progress|NetworkError|busy/i.test((e && (e.message || e.name)) || '');
+function gattOp(fn) {
+  const run = async () => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await fn(); }
+      catch (e) {
+        if (!isBusyErr(e) || attempt >= 5 || !(device && device.gatt.connected)) throw e;
+        await new Promise(r => setTimeout(r, 80 * (attempt + 1)));
+      }
+    }
+  };
+  const p = gattChain.then(run, run);
+  gattChain = p.catch(() => {});
+  return p;
+}
+
 function histRequest(spanSec, maxPts, chunk) {
   const seq = (++histSeq) & 0xff;
   const req = new DataView(new ArrayBuffer(9));
@@ -211,17 +232,20 @@ function histRequest(spanSec, maxPts, chunk) {
     histWaiter = { seq, resolve };
     setTimeout(() => { if (histWaiter && histWaiter.seq === seq) { histWaiter = null; reject(new Error('history timeout')); } }, 4000);
   });
-  const w = histChar.writeValueWithResponse ? histChar.writeValueWithResponse(req.buffer) : histChar.writeValue(req.buffer);
-  return w.then(() => p);
+  const w = gattOp(() => histChar.writeValueWithResponse ? histChar.writeValueWithResponse(req.buffer) : histChar.writeValue(req.buffer));
+  return w.then(() => p, e => { if (histWaiter && histWaiter.seq === seq) histWaiter = null; throw e; });
 }
 
-async function fetchHistory() {
+let histGen = 0;
+async function fetchHistory(attempt = 0) {
   if (!histChar || !(device && device.gatt.connected)) return;
+  const gen = ++histGen;             // a newer fetch supersedes this one
   const want = spanS, pts = [];
   let chunk = 0, total = 0, n = 0;
-  setGStat('Loading history\u2026');
+  setGStat(attempt ? 'Loading history (retry ' + attempt + ')\u2026' : 'Loading history\u2026');
   try {
     do {
+      if (gen !== histGen) return;
       const dv = await histRequest(want, 360, chunk);
       total = dv.getUint16(0, true); n = dv.getUint8(4);
       const now = Date.now();
@@ -239,14 +263,19 @@ async function fetchHistory() {
       }
       chunk++;
     } while (n > 0 && pts.length < total && chunk < 400);
-    if (want !== spanS) return;      // range changed while loading
+    if (gen !== histGen || want !== spanS) return;      // superseded while loading
     histPts = pts;
     const newest = pts.reduce((m, p) => Math.max(m, p.t), 0);
     livePts = livePts.filter(p => p.t > newest + 300);
     setGStat('');
     drawGraph();
   } catch (e) {
+    if (gen !== histGen) return;     // superseded; its replacement reports
     console.warn('history:', e);
+    if (attempt < 3 && device && device.gatt.connected && (isBusyErr(e) || /timeout/i.test(e.message))) {
+      setTimeout(() => { if (gen === histGen) fetchHistory(attempt + 1); }, 400 * (attempt + 1));
+      return;
+    }
     setGStat('History unavailable: ' + e.message);
   }
 }
@@ -630,6 +659,9 @@ function onStatus(event) {
     document.getElementById('holdclr').hidden = !st.hold;
     document.getElementById('lockout').hidden = !st.lockout;
     document.getElementById('lockreason').textContent = st.lockout ? 'Reason: ' + (LOCK_REASONS[st.lockout] || st.lockout) : '';
+    document.getElementById('lockhint').textContent = st.lockout === 9
+      ? 'Pump is held off. This clears by itself once the 12 V supply is back.'
+      : 'Pump is held off. Buttons are ignored until cleared here.';
     document.getElementById('lockbtn').hidden = !!st.lockout;
     if (!st.lockout) { document.getElementById('lockbtn').textContent = 'Lockout'; lockArmed = false; }
   }
@@ -713,7 +745,7 @@ async function attach() {
 
     // Read current value immediately in case a notification hasn't arrived yet
     try {
-      const initVal = await statusChar.readValue();
+      const initVal = await gattOp(() => statusChar.readValue());
       console.log('BLE: initial read:', initVal.byteLength, 'bytes');
       onStatus({ target: { value: initVal } });
     } catch (e) { console.warn('BLE: initial read failed:', e); }
@@ -754,7 +786,7 @@ async function setShutoff() {
   try {
     const buf = new ArrayBuffer(4);
     new DataView(buf).setFloat32(0, v, true);
-    await shutoffChar.writeValueWithResponse(new Uint8Array(buf));
+    await gattOp(() => shutoffChar.writeValueWithResponse(new Uint8Array(buf)));
     showMsg('Shutoff set to ' + v.toFixed(1) + '\u00b0F');
   } catch (err) { showMsg('Write error: ' + err.message); }
 }
@@ -765,7 +797,7 @@ async function setHold() {
   try {
     const buf = new ArrayBuffer(2);
     new DataView(buf).setUint16(0, v, true);
-    await holdChar.writeValueWithResponse(new Uint8Array(buf));
+    await gattOp(() => holdChar.writeValueWithResponse(new Uint8Array(buf)));
     showMsg('Hold time set to ' + v + 's');
   } catch (err) { showMsg('Write error: ' + err.message); }
 }
@@ -776,7 +808,7 @@ async function ctrl(cmd, arg) {
   try {
     const buf = new ArrayBuffer(5);
     const v = new DataView(buf); v.setUint8(0, cmd); v.setUint32(1, arg >>> 0, true);
-    await ctrlChar.writeValueWithResponse(new Uint8Array(buf));
+    await gattOp(() => ctrlChar.writeValueWithResponse(new Uint8Array(buf)));
   } catch (err) { showMsg('Write error: ' + err.message); }
 }
 function toggleManual() { ctrl(6, curState.relay ? 0 : 1); }

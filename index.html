@@ -22,7 +22,7 @@ td,th{padding:12px 14px;border:1px solid #333;font-size:1.1em}
 th{background:#16213e;color:#0ff}
 tr:nth-child(even){background:#16213e}
 tr:nth-child(odd){background:#0f3460}
-#readings{display:none}
+#readings,#readings2,#graphs{display:none}
 p{color:#ccc;margin:8px 0}
 b{color:#0ff}
 .ctrl{margin:16px auto;max-width:420px;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
@@ -75,6 +75,9 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 <div id="readings">
 <table><tr><th>Sensor</th><th>&deg;F</th></tr><tbody id="tb"></tbody></table>
 <p id="delta" style="font-size:1.3em"></p>
+</div>
+
+<div id="graphs">
 <div class="ranges" id="ranges">
   <button class="rbtn" data-s="30" onclick="setSpan(30)">30s</button>
   <button class="rbtn" data-s="60" onclick="setSpan(60)">1m</button>
@@ -84,12 +87,19 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
   <button class="rbtn" data-s="3600" onclick="setSpan(3600)">1h</button>
   <button class="rbtn" data-s="7200" onclick="setSpan(7200)">2h</button>
   <button class="rbtn" data-s="10800" onclick="setSpan(10800)">3h</button>
+  <button class="rbtn" data-s="21600" onclick="setSpan(21600)">6h</button>
+  <button class="rbtn" data-s="86400" onclick="setSpan(86400)">24h</button>
+  <button class="rbtn" data-s="604800" onclick="setSpan(604800)">7d</button>
+  <button class="rbtn" data-s="2592000" onclick="setSpan(2592000)">30d</button>
 </div>
 <canvas id="graph"></canvas>
-<p class="legend"><i style="background:#0ff"></i>Reservoir <i style="background:#fa0"></i>Return Line <i style="background:#f44"></i>Shutoff <i style="background:#0f0;height:8px"></i>Pump on <i style="background:#0f04;border:1px solid #0f08"></i>On hold <i style="background:#f804;border:1px solid #f808"></i>Off hold <i style="background:#f446;border:1px solid #f44"></i>Lockout</p>
+<p class="legend"><i style="background:#0ff"></i>Reservoir <i style="background:#fa0"></i>Return Line <i style="background:#f44"></i>Shutoff <i style="background:#0f0;height:8px"></i>Pump on <i style="background:#0f04;border:1px solid #0f08"></i>On hold <i style="background:#f804;border:1px solid #f808"></i>Off hold <i style="background:#f446;border:1px solid #f44"></i>Lockout <i style="background:#aaa8;height:4px"></i>Time approx.</p>
 <p class="hint" id="gstat"></p>
 <canvas id="pgraph"></canvas>
 <p class="legend"><i style="background:#fd0"></i>Rail V <i style="background:#f80"></i>Pump V <i style="background:#8cf"></i>Rail A <i style="background:#c8f"></i>Pump A</p>
+</div>
+
+<div id="readings2">
 <p style="font-size:1.1em">Pump: <b id="pump">--</b></p>
 <p id="power" style="font-size:.95em"></p>
 <p class="hint" id="uptime"></p>
@@ -151,7 +161,17 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
   <button class="setbtn" onclick="setHold()">Set</button>
 </div>
 <p class="hint">Minimum seconds before the pump can switch on/off (debounce).</p>
+</div>
 <div id="msg"></div>
+
+<div class="panel" id="archive">
+  <h3>Saved history</h3>
+  <div class="row"><span class="hint" style="margin:0;text-align:left" id="arcstats">Nothing saved yet.</span></div>
+  <div class="row">
+    <button class="smallbtn" onclick="exportCsv(false)">Export range CSV</button>
+    <button class="smallbtn" onclick="exportCsv(true)">Export all CSV</button>
+    <button class="smallbtn ghost" id="arcclr" onclick="clearArchive()">Clear</button>
+  </div>
 </div>
 
 <p class="note">Requires HTTPS &amp; Chrome/Edge with Web Bluetooth. &middot; UI v<span id="ver">?</span> &middot; firmware v<span id="fwver">?</span></p>
@@ -168,9 +188,10 @@ const HOLD    = 'beb9c503-ad93-4226-a33f-01efd22eb2f9';
 const PUMP_EN = 'beb9c504-ad93-4226-a33f-01efd22eb2f9';
 const HIST    = 'beb9c505-ad93-4226-a33f-01efd22eb2f9';
 const CTRL    = 'beb9c506-ad93-4226-a33f-01efd22eb2f9';
+const LOG     = 'beb9c507-ad93-4226-a33f-01efd22eb2f9';
 const LOCK_REASONS = { 0: 'none', 1: 'pump current low while on', 2: '5 button presses', 3: 'web UI', 4: 'rail undervoltage', 5: 'rail overcurrent', 6: 'pump undervoltage', 7: 'pump overcurrent', 8: 'temperature out of range', 9: 'no 12 V supply' };
 
-let device, server, shutoffChar, holdChar, ctrlChar, histChar;
+let device, server, shutoffChar, holdChar, ctrlChar, histChar, logChar;
 let curState = { manual: false, relay: false, hold: 0, lockout: 0 };
 
 // ---- temperature graph ----
@@ -236,9 +257,27 @@ function histRequest(spanSec, maxPts, chunk) {
   return w.then(() => p, e => { if (histWaiter && histWaiter.seq === seq) histWaiter = null; throw e; });
 }
 
+// One graph point from raw history fields (tenths of a degree F, mV, mA)
+function toPt(t, r, tt, sh, fl, ma, mv, pmv, rma, lr, est) {
+  return { t, res: r === 0x7FFF ? NaN : r / 10, ret: tt === 0x7FFF ? NaN : tt / 10,
+           shutoff: sh === 0x7FFF ? NaN : sh / 10, pump: !!(fl & 1),
+           manual: !!(fl & 2), hold: (fl >> 2) & 3, lockout: (fl & 16) ? (lr || 3) : 0,
+           pumpA: ma === 0x7FFF ? NaN : ma / 1000, railV: mv === 0xFFFF ? NaN : mv / 1000,
+           pumpV: pmv === 0xFFFF ? NaN : pmv / 1000, railA: rma === 0x7FFF ? NaN : rma / 1000, est: !!est };
+}
+
+const connected = () => !!(device && device.gatt.connected);
+// Ranges past the controller's RAM history, and every range while
+// disconnected, are drawn from the history saved on this phone.
+const archiveMode = () => spanS > MAX_SPAN || !connected() || !histChar;
+// Samples further apart than this are drawn as a break in the line. The
+// saved log has one record per ~10 s, so it needs more slack than the
+// 2 s live history.
+const gapMs = () => Math.max(archiveMode() ? 25000 : 10000, spanS * 1000 / 360 * 3);
+
 let histGen = 0;
 async function fetchHistory(attempt = 0) {
-  if (!histChar || !(device && device.gatt.connected)) return;
+  if (archiveMode()) return loadArchiveView();
   const gen = ++histGen;             // a newer fetch supersedes this one
   const want = spanS, pts = [];
   let chunk = 0, total = 0, n = 0;
@@ -255,11 +294,7 @@ async function fetchHistory(attempt = 0) {
         const sh = dv.getInt16(o + 8, true), fl = dv.getUint8(o + 10);
         const ma = dv.getInt16(o + 11, true), mv = dv.getUint16(o + 13, true);
         const pmv = dv.getUint16(o + 15, true), rma = dv.getInt16(o + 17, true), lr = dv.getUint8(o + 19);
-        pts.push({ t: now - age, res: r === 0x7FFF ? NaN : r / 10, ret: t === 0x7FFF ? NaN : t / 10,
-                   shutoff: sh === 0x7FFF ? NaN : sh / 10, pump: !!(fl & 1),
-                   manual: !!(fl & 2), hold: (fl >> 2) & 3, lockout: (fl & 16) ? (lr || 3) : 0,
-                   pumpA: ma === 0x7FFF ? NaN : ma / 1000, railV: mv === 0xFFFF ? NaN : mv / 1000,
-                   pumpV: pmv === 0xFFFF ? NaN : pmv / 1000, railA: rma === 0x7FFF ? NaN : rma / 1000 });
+        pts.push(toPt(now - age, r, t, sh, fl, ma, mv, pmv, rma, lr, 0));
       }
       chunk++;
     } while (n > 0 && pts.length < total && chunk < 400);
@@ -279,6 +314,315 @@ async function fetchHistory(attempt = 0) {
     setGStat('History unavailable: ' + e.message);
   }
 }
+
+// ---- saved history (IndexedDB) ----
+// The controller writes a flash log (a record every 10 s plus every state
+// change) that survives its reboots; while connected this page copies it
+// here, where it is kept for good. One entry per hour, AREC bytes a record:
+// u32 ms into the hour, i16 reservoir, i16 return, i16 shutoff, u8 flags,
+// u8 lockout reason, i16 pump mA, u16 rail mV, u16 pump mV, i16 rail mA,
+// u8 time-is-approximate, 3 spare.
+const BUCKET_MS = 3600000, AREC = 24;
+let dbP = null, arcStats = { count: 0, first: null, last: null }, persisted = false;
+
+function openDb() {
+  if (!dbP) dbP = new Promise((res, rej) => {
+    const r = indexedDB.open('coldsuit', 1);
+    r.onupgradeneeded = () => { r.result.createObjectStore('buckets'); r.result.createObjectStore('meta'); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => { dbP = null; rej(r.error); };
+  });
+  return dbP;
+}
+const reqP = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+const txDone = tx => new Promise((res, rej) => { tx.oncomplete = () => res(); tx.onerror = tx.onabort = () => rej(tx.error); });
+async function metaGet(k) { const d = await openDb(); return reqP(d.transaction('meta').objectStore('meta').get(k)); }
+
+function readRec(dv, o, key) {
+  return { t: key + dv.getUint32(o, true), r: dv.getInt16(o + 4, true), tt: dv.getInt16(o + 6, true),
+           sh: dv.getInt16(o + 8, true), fl: dv.getUint8(o + 10), lr: dv.getUint8(o + 11),
+           ma: dv.getInt16(o + 12, true), mv: dv.getUint16(o + 14, true), pmv: dv.getUint16(o + 16, true),
+           rma: dv.getInt16(o + 18, true), est: dv.getUint8(o + 20) };
+}
+const recPt = p => toPt(p.t, p.r, p.tt, p.sh, p.fl, p.ma, p.mv, p.pmv, p.rma, p.lr, p.est);
+
+// Append records to an hour's buffer, keeping it in time order (a session
+// with an estimated time can land before records already stored).
+function packBucket(key, old, recs) {
+  const n0 = old ? old.byteLength / AREC : 0, n = n0 + recs.length;
+  const buf = new ArrayBuffer(n * AREC), u8 = new Uint8Array(buf), dv = new DataView(buf);
+  if (old) u8.set(new Uint8Array(old));
+  recs.forEach((p, i) => {
+    const o = (n0 + i) * AREC;
+    dv.setUint32(o, p.t - key, true); dv.setInt16(o + 4, p.r, true); dv.setInt16(o + 6, p.tt, true);
+    dv.setInt16(o + 8, p.sh, true); dv.setUint8(o + 10, p.fl); dv.setUint8(o + 11, p.lr);
+    dv.setInt16(o + 12, p.ma, true); dv.setUint16(o + 14, p.mv, true); dv.setUint16(o + 16, p.pmv, true);
+    dv.setInt16(o + 18, p.rma, true); dv.setUint8(o + 20, p.est ? 1 : 0);
+  });
+  const dt = i => dv.getUint32(i * AREC, true);
+  let sorted = true;
+  for (let i = 1; i < n && sorted; i++) if (dt(i) < dt(i - 1)) sorted = false;
+  if (sorted) return buf;
+  const out = new Uint8Array(buf.byteLength);
+  [...Array(n).keys()].sort((a, b) => dt(a) - dt(b)).forEach((j, i) => out.set(u8.subarray(j * AREC, (j + 1) * AREC), i * AREC));
+  return out.buffer;
+}
+
+// Store records and the sync position in one transaction, so a dropped link
+// can never store a record twice or skip one.
+async function archiveWrite(recs, cursor) {
+  const d = await openDb(), tx = d.transaction(['buckets', 'meta'], 'readwrite');
+  const bs = tx.objectStore('buckets'), ms = tx.objectStore('meta');
+  const groups = new Map();
+  for (const p of recs) {
+    const k = Math.floor(p.t / BUCKET_MS) * BUCKET_MS;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
+  }
+  for (const [k, list] of groups) bs.get(k).onsuccess = e => bs.put(packBucket(k, e.target.result, list), k);
+  if (recs.length) ms.get('stats').onsuccess = e => {
+    const s = e.target.result || { count: 0, first: null, last: null };
+    for (const p of recs) {
+      s.count++;
+      if (s.first === null || p.t < s.first) s.first = p.t;
+      if (s.last === null || p.t > s.last) s.last = p.t;
+    }
+    ms.put(s, 'stats');
+  };
+  ms.put(cursor, 'cursor');
+  await txDone(tx);
+}
+
+async function archiveRecs(t0, t1) {
+  const d = await openDb(), st = d.transaction('buckets').objectStore('buckets');
+  const range = IDBKeyRange.bound(Math.floor(t0 / BUCKET_MS) * BUCKET_MS, t1);
+  const [keys, vals] = await Promise.all([reqP(st.getAllKeys(range)), reqP(st.getAll(range))]);
+  return { keys, vals };
+}
+
+// Saved records in [t0, t1], thinned to about maxPts points: one per time
+// slice, the slice's last sample, but a pump run, hold or lockout anywhere
+// in the slice still shows. Also the last record before t0, so lines run
+// off the left edge.
+async function loadArchive(t0, t1, maxPts) {
+  const { keys, vals } = await archiveRecs(t0 - BUCKET_MS, t1);
+  const w = (t1 - t0) / maxPts, out = [];
+  let before = null, cur = null, ci = -1;
+  for (let b = 0; b < keys.length; b++) {
+    const dv = new DataView(vals[b]);
+    for (let o = 0; o < dv.byteLength; o += AREC) {
+      const p = readRec(dv, o, keys[b]);
+      if (p.t < t0) { before = p; continue; }
+      if (p.t > t1) break;
+      const i = Math.floor((p.t - t0) / w);
+      if (i !== ci) { if (cur) out.push(cur); ci = i; cur = p; continue; }
+      p.fl |= cur.fl & 1;
+      if (!(p.fl & 0x1c)) p.fl |= cur.fl & 0x1c;
+      p.lr = p.lr || cur.lr;
+      p.est = p.est || cur.est;
+      cur = p;
+    }
+  }
+  if (cur) out.push(cur);
+  if (before) out.unshift(before);
+  return out.map(recPt);
+}
+
+async function loadArchiveView() {
+  const gen = ++histGen, want = spanS;
+  try {
+    const now = Date.now();
+    const pts = await loadArchive(now - want * 1000 - EDGE_LAG_MS, now, 720);
+    if (gen !== histGen || want !== spanS) return;
+    histPts = pts;
+    const newest = pts.reduce((m, p) => Math.max(m, p.t), 0);
+    livePts = livePts.filter(p => p.t > newest + 300);
+    setGStat(pts.length || livePts.length ? '' : arcStats.count ? 'Nothing saved in this range.' : 'No saved history yet.');
+    drawGraph();
+  } catch (e) {
+    if (gen === histGen) setGStat('Saved history unavailable: ' + e.message);
+  }
+}
+
+// ---- controller log sync ----
+let logTag = 0, logWaiter = null, syncing = false;
+
+function onLog(ev) {
+  const dv = ev.target.value;
+  if (logWaiter && dv.byteLength >= 2 && dv.getUint8(1) === logWaiter.tag) {
+    const w = logWaiter; logWaiter = null; w.resolve(dv);
+  }
+}
+
+// req: DataView whose byte 0 is the op; byte 1 is filled with a fresh tag
+function logRequest(req) {
+  const tag = (++logTag) & 0xff;
+  req.setUint8(1, tag);
+  let resolveFn;
+  const p = new Promise(resolve => { resolveFn = resolve; });
+  // Listen before writing, so a fast reply is not missed, but start the
+  // timeout only once the write has gone out: it can sit in the GATT queue
+  // behind a whole history fetch.
+  logWaiter = { tag, resolve: resolveFn };
+  const w = gattOp(() => logChar.writeValueWithResponse ? logChar.writeValueWithResponse(req.buffer) : logChar.writeValue(req.buffer));
+  return w.then(() => Promise.race([p, new Promise((_, reject) => setTimeout(() => {
+    if (logWaiter && logWaiter.tag === tag) { logWaiter = null; reject(new Error('log timeout')); }
+  }, 4000))]), e => { if (logWaiter && logWaiter.tag === tag) logWaiter = null; throw e; });
+}
+
+// Epoch ms each boot started. A boot that no phone set the clock for is
+// assumed to have ended right as the next one began, and marked approximate.
+function bootStarts(boots, info) {
+  const m = new Map();
+  let next = null;
+  for (let i = boots.length - 1; i >= 0; i--) {
+    const b = boots[i];
+    let s;
+    if (b.epoch) s = { t: b.epoch, est: 0 };
+    else if (b.boot === info.boot) s = { t: Date.now() - info.ms, est: 0 };
+    else if (next) s = { t: next.t - (b.end === 0xFFFFFFFF ? 0 : b.end), est: 1 };
+    else continue;
+    m.set(b.boot, s);
+    next = s;
+  }
+  return m;
+}
+
+async function syncLog() {
+  if (!logChar || syncing || !connected()) return;
+  syncing = true;
+  let showed = false;
+  try {
+    // Setting the clock first means this boot's records always get real times
+    const tq = new DataView(new ArrayBuffer(10));
+    tq.setUint8(0, 3); tq.setBigUint64(2, BigInt(Date.now()), true);
+    const idv = await logRequest(tq);
+    const info = { logId: idv.getUint32(2, true), boot: idv.getUint16(6, true), ms: idv.getUint32(8, true),
+                   oldest: idv.getUint32(12, true), head: idv.getUint32(16, true) };
+    const cur = await metaGet('cursor');
+    let seq = cur && cur.logId === info.logId && cur.seq <= info.head ? cur.seq : 0;
+    if (seq >= info.head) return;
+    const boots = [];
+    for (let total = 1; boots.length < total;) {
+      const q = new DataView(new ArrayBuffer(4));
+      q.setUint8(0, 1); q.setUint16(2, boots.length, true);
+      const dv = await logRequest(q), n = dv.getUint8(4);
+      total = dv.getUint16(2, true);
+      if (!n) break;
+      for (let i = 0; i < n; i++) {
+        const o = 5 + i * 14;
+        boots.push({ boot: dv.getUint16(o, true), epoch: Number(dv.getBigUint64(o + 2, true)), end: dv.getUint32(o + 10, true) });
+      }
+    }
+    const starts = bootStarts(boots, info), from = Math.max(seq, info.oldest);
+    let batch = [];
+    for (;;) {
+      const q = new DataView(new ArrayBuffer(6));
+      q.setUint8(0, 2); q.setUint32(2, seq, true);
+      const dv = await logRequest(q), n = dv.getUint8(2), first = dv.getUint32(3, true);
+      if (!n) break;
+      for (let i = 0; i < n; i++) {
+        const o = 7 + i * 22, s = starts.get(dv.getUint16(o, true));
+        if (!s) continue;     // its boot is no longer listed, so it cannot be placed in time
+        batch.push({ t: s.t + dv.getUint32(o + 2, true), r: dv.getInt16(o + 6, true), tt: dv.getInt16(o + 8, true),
+                     sh: dv.getInt16(o + 10, true), fl: dv.getUint8(o + 12), ma: dv.getInt16(o + 13, true),
+                     mv: dv.getUint16(o + 15, true), pmv: dv.getUint16(o + 17, true), rma: dv.getInt16(o + 19, true),
+                     lr: dv.getUint8(o + 21), est: s.est });
+      }
+      seq = first + n;
+      if (batch.length >= 300) { await archiveWrite(batch, { logId: info.logId, seq }); batch = []; }
+      if (info.head - from > 200) {
+        showed = true;
+        setGStat('Saving controller log... ' + Math.min(100, Math.round(100 * (seq - from) / (info.head - from))) + '%');
+      }
+    }
+    await archiveWrite(batch, { logId: info.logId, seq });
+    if (!persisted && navigator.storage && navigator.storage.persist) persisted = await navigator.storage.persist();
+  } catch (e) {
+    console.warn('log sync:', e);
+  } finally {
+    syncing = false;
+  }
+  if (showed) setGStat('');
+  await refreshArchiveUi();
+  if (archiveMode()) loadArchiveView();
+}
+setInterval(() => { if (connected() && !document.hidden) syncLog(); }, 60000);
+
+function fmtDate(t) { return new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }); }
+
+function showGraphs() {
+  document.getElementById('graphs').style.display = connected() || arcStats.count ? 'block' : 'none';
+}
+
+async function refreshArchiveUi() {
+  try { arcStats = (await metaGet('stats')) || { count: 0, first: null, last: null }; } catch (e) { console.warn('archive:', e); }
+  const el = document.getElementById('arcstats');
+  el.textContent = !arcStats.count
+    ? "Nothing saved yet. The controller's log is copied to this phone whenever the page is connected."
+    : arcStats.count.toLocaleString() + ' records, ' + fmtDate(arcStats.first) + ' to ' + fmtDate(arcStats.last) +
+      ', about ' + (arcStats.count * AREC < 1048576 ? Math.ceil(arcStats.count * AREC / 1024) + ' KB.' : (arcStats.count * AREC / 1048576).toFixed(1) + ' MB.') +
+      (persisted ? '' : ' The browser may clear it if the phone runs low on space; installing the page as an app helps.');
+  showGraphs();
+}
+
+function csvTime(t) {
+  const d = new Date(t), z = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + ' ' + z(d.getHours()) + ':' + z(d.getMinutes()) + ':' + z(d.getSeconds());
+}
+
+async function exportCsv(all) {
+  try {
+    const t1 = Date.now(), t0 = all ? 0 : t1 - spanS * 1000;
+    const { keys, vals } = await archiveRecs(t0, t1);
+    const num = (v, d) => isNaN(v) ? '' : v.toFixed(d);
+    const lines = ['time_local,epoch_ms,time_approximate,reservoir_f,return_f,shutoff_f,pump_on,mode,hold,lockout_reason,rail_v,rail_a,pump_v,pump_a'];
+    for (let b = 0; b < keys.length; b++) {
+      const dv = new DataView(vals[b]);
+      for (let o = 0; o < dv.byteLength; o += AREC) {
+        const p = recPt(readRec(dv, o, keys[b]));
+        if (p.t < t0 || p.t > t1) continue;
+        lines.push([csvTime(p.t), p.t, p.est ? 1 : 0, num(p.res, 1), num(p.ret, 1), num(p.shutoff, 1), p.pump ? 1 : 0,
+                    p.manual ? 'manual' : 'auto', ['', 'on', 'off'][p.hold] || '', p.lockout ? LOCK_REASONS[p.lockout] || p.lockout : '',
+                    num(p.railV, 3), num(p.railA, 3), num(p.pumpV, 3), num(p.pumpA, 3)].join(','));
+      }
+    }
+    if (lines.length < 2) { showMsg('Nothing saved in this range'); return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\n') + '\n'], { type: 'text/csv' }));
+    a.download = 'coldsuit-' + csvTime(t1).replace(/[: ]/g, '-') + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    showMsg('Exported ' + (lines.length - 1).toLocaleString() + ' records');
+  } catch (e) { showMsg('Export failed: ' + e.message); }
+}
+
+let clearArmed = false;
+async function clearArchive() {
+  const b = document.getElementById('arcclr');
+  if (!clearArmed) {
+    clearArmed = true; b.textContent = 'Really delete all saved history?'; b.classList.add('danger');
+    setTimeout(() => { if (clearArmed) { clearArmed = false; b.textContent = 'Clear'; b.classList.remove('danger'); } }, 4000);
+    return;
+  }
+  clearArmed = false; b.textContent = 'Clear'; b.classList.remove('danger');
+  try {
+    // The sync position is kept, so records already copied are not fetched again
+    const d = await openDb(), tx = d.transaction(['buckets', 'meta'], 'readwrite');
+    tx.objectStore('buckets').clear();
+    tx.objectStore('meta').delete('stats');
+    await txDone(tx);
+    showMsg('Saved history cleared');
+  } catch (e) { showMsg('Clear failed: ' + e.message); }
+  await refreshArchiveUi();
+  fetchHistory();
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  try { if (navigator.storage && navigator.storage.persisted) persisted = await navigator.storage.persisted(); } catch (e) {}
+  await refreshArchiveUi();
+  if (!connected()) fetchHistory();
+});
 
 function fmtPower(mV, mA) {
   if (mV === 0xFFFF) return 'n/a';
@@ -300,7 +644,8 @@ function agoLabel(ms) {
   if (s <= 0) return 'now';
   if (s < 60) return '-' + s + 's';
   if (s < 3600) return '-' + Math.round(s / 60) + 'm';
-  return '-' + (s % 3600 ? (s / 3600).toFixed(1) : s / 3600) + 'h';
+  if (s < 172800) return '-' + (s % 3600 ? (s / 3600).toFixed(1) : s / 3600) + 'h';
+  return '-' + (s % 86400 ? (s / 86400).toFixed(1) : s / 86400) + 'd';
 }
 
 // ---- crosshair / tooltip ----
@@ -326,13 +671,17 @@ function nearestPt(pts, t) {
 
 function fmtF(v) { return isNaN(v) ? '--' : v.toFixed(1) + '°F'; }
 function fmtVA(v, a) { return (isNaN(v) ? '--' : v.toFixed(2) + ' V') + ', ' + (isNaN(a) ? '--' : a.toFixed(3) + ' A'); }
-function clock(t) { const d = new Date(t); return d.toLocaleTimeString([], { hour12: false }); }
+function clock(t) {
+  const d = new Date(t);
+  return (Date.now() - t > 86400000 ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' : '') + d.toLocaleTimeString([], { hour12: false });
+}
 
 function updateTip(hp) {
   const tip = document.getElementById('tip');
   if (!hp || !hover) { tip.hidden = true; return; }
   tip.innerHTML =
-    '<div class="h">' + clock(hp.t) + ' (' + agoLabel(Date.now() - hp.t).replace('-', '') + ' ago)</div>' +
+    '<div class="h">' + (hp.est ? '~' : '') + clock(hp.t) + ' (' + agoLabel(Date.now() - hp.t).replace('-', '') + ' ago)</div>' +
+    (hp.est ? '<div style="color:#aaa">Approximate time: no phone set the clock that session</div>' : '') +
     '<div><i style="background:#0ff"></i>Reservoir ' + fmtF(hp.res) + '</div>' +
     '<div><i style="background:#fa0"></i>Return Line ' + fmtF(hp.ret) + '</div>' +
     '<div><i style="background:#f44"></i>Shutoff ' + fmtF(hp.shutoff) + '</div>' +
@@ -390,7 +739,7 @@ function drawPowerGraph(pts, t0, now, hp) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
   const padL = 38, padR = 36, padT = 8, padB = 20;
-  const gap = Math.max(10000, spanS * 1000 / 360 * 3);
+  const gap = gapMs();
 
   const vs = [], as = [];
   pts.forEach(p => { ['railV', 'pumpV'].forEach(k => { if (!isNaN(p[k])) vs.push(p[k]); }); ['railA', 'pumpA'].forEach(k => { if (!isNaN(p[k])) as.push(p[k]); }); });
@@ -453,7 +802,7 @@ function drawGraph() {
   if (hover) {
     const ht = t0 + hover.frac * spanS * 1000;
     hp = nearestPt(pts, ht);
-    if (hp && Math.abs(hp.t - ht) > Math.max(10000, spanS * 1000 / 360 * 3)) hp = null;
+    if (hp && Math.abs(hp.t - ht) > gapMs()) hp = null;
   }
 
   const padL = 38, padR = 8, padT = 8, barH = 12, padB = 20 + barH + 6;
@@ -480,7 +829,7 @@ function drawGraph() {
     ctx.strokeStyle = '#2a2a4a'; ctx.beginPath(); ctx.moveTo(x(t), padT); ctx.lineTo(x(t), barTop - 6); ctx.stroke();
     ctx.fillStyle = '#888'; ctx.fillText(agoLabel(Date.now() - t), Math.min(Math.max(x(t), padL + 12), W - 14), H - 6);
   }
-  const gap = Math.max(10000, spanS * 1000 / 360 * 3);
+  const gap = gapMs();
   ctx.save();
   ctx.beginPath(); ctx.rect(padL, padT, W - padL - padR, barTop + barH - padT); ctx.clip();
 
@@ -502,14 +851,23 @@ function drawGraph() {
     if (b.k[0] === 'L') {
       ctx.fillStyle = 'rgba(255,68,68,0.22)'; ctx.fillRect(x0, padT, x1 - x0, barTop - 6 - padT);
       ctx.strokeStyle = '#f44'; ctx.beginPath(); ctx.moveTo(x0, padT); ctx.lineTo(x0, barTop - 6); ctx.stroke();
-      ctx.fillStyle = '#f88'; ctx.fillText('LOCKOUT: ' + (LOCK_REASONS[b.p.lockout] || b.p.lockout), x0 + 3, padT + 10);
+      // Bands only a few pixels wide (long ranges) would stack their labels
+      if (x1 - x0 > 24) { ctx.fillStyle = '#f88'; ctx.fillText('LOCKOUT: ' + (LOCK_REASONS[b.p.lockout] || b.p.lockout), x0 + 3, padT + 10); }
     } else {
       ctx.fillStyle = b.k === 'H1' ? 'rgba(0,255,0,0.10)' : 'rgba(255,136,0,0.12)';
       ctx.fillRect(x0, padT, x1 - x0, barTop - 6 - padT);
-      ctx.fillStyle = b.k === 'H1' ? '#6f6' : '#fb6'; ctx.fillText(b.k === 'H1' ? 'ON hold' : 'OFF hold', x0 + 3, padT + 10);
+      if (x1 - x0 > 24) { ctx.fillStyle = b.k === 'H1' ? '#6f6' : '#fb6'; ctx.fillText(b.k === 'H1' ? 'ON hold' : 'OFF hold', x0 + 3, padT + 10); }
     }
   }
   ctx.font = '10px system-ui,sans-serif';
+
+  // Stretches whose time is estimated, as a grey strip along the top
+  ctx.fillStyle = 'rgba(170,170,170,0.55)';
+  for (let i = 0, es = null; i <= pts.length; i++) {
+    const p = pts[i];
+    if (p && p.est) { if (es === null) es = p.t; continue; }
+    if (es !== null) { const end = Math.min(p ? p.t : now, pts[i - 1].t + gap); ctx.fillRect(x(es), padT, Math.max(2, x(end) - x(es)), 4); es = null; }
+  }
 
   // Shutoff threshold as a stepped line: each value holds until the next sample
   ctx.setLineDash([4, 4]); ctx.strokeStyle = '#f44'; ctx.lineWidth = 1; ctx.beginPath();
@@ -565,7 +923,9 @@ function drawGraph() {
 (function animate() {
   let last = 0;
   function frame(ts) {
-    if (!document.hidden && ts - last >= 50 && document.getElementById('readings').style.display !== 'none') { last = ts; drawGraph(); }
+    // Long ranges barely move, so redraw them less often
+    const every = spanS > MAX_SPAN ? 1000 : 50;
+    if (!document.hidden && ts - last >= every && document.getElementById('graphs').style.display !== 'none') { last = ts; drawGraph(); }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
@@ -592,6 +952,8 @@ function ui(connected, loading) {
   }
   document.getElementById('disconnectBtn').style.display = connected ? 'inline-block' : 'none';
   document.getElementById('readings').style.display = connected ? 'block' : 'none';
+  document.getElementById('readings2').style.display = connected ? 'block' : 'none';
+  showGraphs();
   const dot = document.getElementById('dot');
   dot.className = 'dot ' + (connected ? 'on' : 'off');
   document.getElementById('stxt').textContent = loading ? 'Connecting…' : connected ? 'Connected' : 'Disconnected';
@@ -624,6 +986,7 @@ function onStatus(event) {
   const st = dv.byteLength >= 45 ? {
     manual: !!dv.getUint8(34), hold: dv.getUint8(35), holdLeft: dv.getUint32(36, true),
     holdTotal: dv.getUint32(40, true), lockout: dv.getUint8(44) } : null;
+  const oled = dv.byteLength >= 48 ? { ok: !!dv.getUint8(45), errors: dv.getUint16(46, true) } : null;
 
   let rows = '';
   if (!isNaN(resF))  rows += '<tr><td>Reservoir</td><td>' + resF.toFixed(1) + '\u00b0F</td></tr>';
@@ -670,7 +1033,9 @@ function onStatus(event) {
     document.getElementById('btn' + i).classList.toggle('on', !!(btnBits & (1 << i)));
   }
 
-  document.getElementById('uptime').textContent = uptime === null ? '' : 'Controller up ' + fmtUptime(uptime);
+  document.getElementById('uptime').textContent = (uptime === null ? '' : 'Controller up ' + fmtUptime(uptime)) +
+    (oled === null ? '' : ' \u00b7 display ' + (oled.ok ? 'OK' : 'not found') +
+      (oled.errors ? ', ' + oled.errors + ' I2C error' + (oled.errors === 1 ? '' : 's') : ''));
   document.getElementById('fwver').textContent = fw === null ? '?' : fw;
   document.getElementById('power').innerHTML = pw === null ? '' :
     '12V rail: <b>' + fmtPower(pw.railV, pw.railA) + '</b> &nbsp; Pump: <b>' + fmtPower(pw.pumpV, pw.pumpA) + '</b>';
@@ -705,6 +1070,7 @@ async function doConnect() {
     });
     device.addEventListener('gattserverdisconnected', () => {
       ui(false);
+      fetchHistory();     // fall back to the history saved on this phone
       // Clear sync flags so next connect re-reads values
       delete document.getElementById('thr').dataset.set;
       delete document.getElementById('hold').dataset.set;
@@ -738,6 +1104,12 @@ async function attach() {
       histChar.addEventListener('characteristicvaluechanged', onHist);
       await histChar.startNotifications();
     } catch (e) { console.warn('no history characteristic (old firmware?)', e); }
+    logChar = null;
+    try {
+      logChar = await svc.getCharacteristic(LOG);
+      logChar.addEventListener('characteristicvaluechanged', onLog);
+      await logChar.startNotifications();
+    } catch (e) { logChar = null; console.warn('no log characteristic (old firmware?)', e); }
 
     statusChar.addEventListener('characteristicvaluechanged', onStatus);
     await statusChar.startNotifications();
@@ -753,6 +1125,7 @@ async function attach() {
     ui(true);
     drawGraph();
     fetchHistory();
+    syncLog();
   } catch (err) {
     console.error(err);
     ui(false);
@@ -765,6 +1138,7 @@ function doDisconnect() {
   wantConnected = false;
   if (device && device.gatt.connected) device.gatt.disconnect();
   ui(false);
+  fetchHistory();
 }
 
 // Release the Pico while backgrounded so another phone can connect;

@@ -57,6 +57,8 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
 .ghost{background:#0f3460;color:#ccc;border:1px solid #444}
 #lockout{background:#4a0f1a;border-color:#f44}
 #lockout h3{color:#f66}
+#cutoff{background:#3a2a05;border-color:#fa0}
+#cutoff h3{color:#fc4}
 #holdbar{height:6px;background:#0f3460;border-radius:3px;overflow:hidden;margin-top:4px}
 #holdfill{height:100%;background:#0f0;width:0}
 .btns{display:flex;gap:10px;justify-content:center;margin:8px auto 16px;max-width:420px}
@@ -114,6 +116,10 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
   <div class="row"><span id="lockreason"></span></div>
   <div class="row"><span class="hint" style="margin:0" id="lockhint">Pump is held off. Buttons are ignored until cleared here.</span></div>
   <div class="row"><button class="smallbtn" onclick="ctrl(5, 0)">Clear lockout</button></div>
+</div>
+<div class="panel" id="cutoff" hidden>
+  <h3>NO POWER TO THE PUMP</h3>
+  <div class="row"><span class="hint" style="margin:0;color:#eed">The pump was switched on with the 12 V rail fine, but the pump line read 0 V. Is the pump cutoff switch (the relay module's 5 V feed) off?</span></div>
 </div>
 
 <div class="panel">
@@ -1038,6 +1044,7 @@ function onStatus(event) {
   }
 
   showChecks(rulesOff);
+  showCutoff(dv.byteLength >= 50 && !!dv.getUint8(49));
 
   for (let i = 0; i < 3; i++) {
     document.getElementById('btn' + i).classList.toggle('on', !!(btnBits & (1 << i)));
@@ -1195,6 +1202,13 @@ async function ctrl(cmd, arg) {
     await gattOp(() => ctrlChar.writeValueWithResponse(new Uint8Array(buf)));
   } catch (err) { showMsg('Write error: ' + err.message); }
 }
+// The controller flags a pump line with no power while the relay is on and the
+// rail is fine: the relay isn't closing, most often because the pump cutoff
+// switch has the relay module unpowered. Older firmware doesn't send the flag.
+function showCutoff(flag) {
+  document.getElementById('cutoff').hidden = !flag;
+}
+
 // Lockout rules the page can switch off until the controller reboots
 const SAFETY_RULES = [1, 6];
 function showChecks(off) {

@@ -134,6 +134,13 @@ input[type=number]{width:80px;padding:8px;font-size:1.1em;background:#16213e;col
     <button class="smallbtn" onclick="setHold()">Set hold</button>
   </div>
   <div class="row"><button class="smallbtn ghost" id="lockbtn" onclick="lockoutClick()">Lockout</button></div>
+  <p class="hint" id="checksoff" style="margin:4px 0;color:#fa0" hidden></p>
+  <details id="safety" style="margin-top:8px;font-size:.85em;color:#bbb" hidden>
+    <summary style="cursor:pointer;color:#9ad">Safety checks</summary>
+    <p style="margin:6px 0 2px;color:#ccc">Unticked checks can't cause a lockout. They come back on when the controller reboots.</p>
+    <div class="row" style="justify-content:flex-start"><label><input type="checkbox" id="chk1" onchange="setChecks()" checked> Lockout on low pump current (under 300 mA)</label></div>
+    <div class="row" style="justify-content:flex-start"><label><input type="checkbox" id="chk6" onchange="setChecks()" checked> Lockout on low pump voltage (under 10.5 V)</label></div>
+  </details>
   <details style="margin-top:8px;font-size:.85em;color:#bbb">
     <summary style="cursor:pointer;color:#9ad">Button guide</summary>
     <p style="margin:6px 0 2px;color:#ccc">The external button and S2 on the board do the same thing. S3 switches Auto/Manual. Short press = under half a second, long press = hold it longer. Presses within 0.6 s of each other count as one sequence.</p>
@@ -987,6 +994,7 @@ function onStatus(event) {
     manual: !!dv.getUint8(34), hold: dv.getUint8(35), holdLeft: dv.getUint32(36, true),
     holdTotal: dv.getUint32(40, true), lockout: dv.getUint8(44) } : null;
   const oled = dv.byteLength >= 48 ? { ok: !!dv.getUint8(45), errors: dv.getUint16(46, true) } : null;
+  const rulesOff = dv.byteLength >= 49 ? dv.getUint8(48) : null;
 
   let rows = '';
   if (!isNaN(resF))  rows += '<tr><td>Reservoir</td><td>' + resF.toFixed(1) + '\u00b0F</td></tr>';
@@ -1028,6 +1036,8 @@ function onStatus(event) {
     document.getElementById('lockbtn').hidden = !!st.lockout;
     if (!st.lockout) { document.getElementById('lockbtn').textContent = 'Lockout'; lockArmed = false; }
   }
+
+  showChecks(rulesOff);
 
   for (let i = 0; i < 3; i++) {
     document.getElementById('btn' + i).classList.toggle('on', !!(btnBits & (1 << i)));
@@ -1184,6 +1194,25 @@ async function ctrl(cmd, arg) {
     const v = new DataView(buf); v.setUint8(0, cmd); v.setUint32(1, arg >>> 0, true);
     await gattOp(() => ctrlChar.writeValueWithResponse(new Uint8Array(buf)));
   } catch (err) { showMsg('Write error: ' + err.message); }
+}
+// Lockout rules the page can switch off until the controller reboots
+const SAFETY_RULES = [1, 6];
+function showChecks(off) {
+  document.getElementById('safety').hidden = off === null;
+  const names = [];
+  for (const r of SAFETY_RULES) {
+    if (off === null) continue;
+    document.getElementById('chk' + r).checked = !(off & (1 << r));
+    if (off & (1 << r)) names.push(LOCK_REASONS[r] || r);
+  }
+  const el = document.getElementById('checksoff');
+  el.hidden = !names.length;
+  el.textContent = names.length ? 'Lockout check off until reboot: ' + names.join(', ') : '';
+}
+function setChecks() {
+  let off = 0;
+  for (const r of SAFETY_RULES) if (!document.getElementById('chk' + r).checked) off |= 1 << r;
+  ctrl(7, off);
 }
 function toggleManual() { ctrl(6, curState.relay ? 0 : 1); }
 function setHold() {
